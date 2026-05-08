@@ -1,0 +1,51 @@
+# =============================================================================
+# Project Configuration - arcpy-orchestration
+# =============================================================================
+# This is the main configuration file for the project. Modify values here
+# to control project behavior without changing source code.
+#
+# Secrets (credentials, API keys) should go in secrets.yml, NOT here.
+# Copy secrets_template.yml to secrets.yml and fill in your values.
+#
+# Environment-specific settings live under the environments key.  Set the
+# ENVIRONMENT constant in src/arcpy_orchestration/config.py
+# (or the PROJECT_ENV environment variable) to switch between dev / test / prod.
+# =============================================================================
+
+project:
+  name: "arcpy-orchestration"
+  title: "ArcPy Orchestration"
+  description: "Web-based Python script orchestration with access to an ArcPy environment through ArcGIS Pro."
+
+# ---------------------------------------------------------------------------
+# Environment-specific settings
+# ---------------------------------------------------------------------------
+# The special "default" section provides fallback values for any key that is
+# not explicitly defined in a named environment (dev / test / prod).
+# Merge order: top-level keys → default → <active environment>.
+# Only add a key to a named environment when it must differ from the default.
+# ---------------------------------------------------------------------------
+environments:
+
+  default:
+    logging:
+      level: DEBUG
+    data:
+      input: "data/raw/input_data.csv"
+      output: "data/processed/processed.gdb/output_data"
+    spatial:
+      default_crs: "EPSG:4326"  # CRS to use when not specified by data source
+      default_unit: "meters"    # Unit for distance calculations (e.g., "meters", "degrees")
+
+  dev:
+    # inherits all defaults; override only what differs
+    logging:
+      level: DEBUG
+
+  test:
+    logging:
+      level: INFO
+
+  prod:
+    logging:
+      level: WARNING
