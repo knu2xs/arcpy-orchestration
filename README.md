@@ -38,20 +38,6 @@ that with off-the-shelf, open-source components combined with ArcGIS Pro.
 `python scripts/plombery_orchestrator.py` and open
 [http://localhost:8000](http://localhost:8000). Full deployment instructions
 live under [`docsrc/mkdocs/03_setup.md`](docsrc/mkdocs/03_setup.md).
-
-## Getting Started
-
-1 - Clone this repo.
-
-2 - Create an environment with the requirements.
-    
-```
-        > make env
-```
-
-3 - Start Building - If you are more into Python, a good place to start is `jupyter lab` from the root of the project, and 
-  start experimenting with Jupyter in the `./notebooks` directory, and move code logic to the `./src` directory. If GIS is 
-  more your schtick, open the project `./arcgis/arcpy-orchestration.aprx`.
 <!--end-->
 
 <p><small>Project based on the <a target="_blank" href="https://github.com/knu2xs/cookiecutter-geoai">cookiecutter 
