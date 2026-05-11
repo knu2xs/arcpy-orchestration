@@ -103,10 +103,17 @@ IIS needs one URL Rewrite rule to forward all inbound requests to it.
     | Field | Value |
     |---|---|
     | Name | `Plombery Reverse Proxy` |
+    | Match URL → Using | `Regular Expressions` |
     | Match URL → Pattern | `(.*)` |
     | Action type | `Rewrite` |
     | Rewrite URL | `http://localhost:8000/{R:1}` |
     | Append query string | checked |
+
+    !!! warning "`The rule reference "1" is not valid`"
+        This alert means IIS doesn't see a capture group in the **Match URL**
+        pattern. Make sure **Using** is set to `Regular Expressions` (not
+        `Wildcards`) and that the **Pattern** is `(.*)` — the parentheses are
+        the capture group that `{R:1}` refers to.
 
 3. Apply, then browse to `https://<your-host>/` — at this point you'll get a
     `502` because Plombery is not yet running; that's expected.
