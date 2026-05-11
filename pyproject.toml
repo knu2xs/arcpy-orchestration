@@ -27,7 +27,8 @@ license = {text = "Apache-2.0"}
 
 
 dependencies = [
-    "plombery>=0.5.2"
+    "plombery>=0.5.2",
+    "uvicorn>=0.30"
 ]
 
 [tool.setuptools.packages.find]
