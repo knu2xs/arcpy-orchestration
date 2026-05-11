@@ -58,7 +58,7 @@ Start by opening IIS Manager by searching for IIS Manager.
 - In IIS Manager, select the machine name, and then open Server Certificates.
 - Click on import, and import the *.pfx file in the dialog.
 
-![Server Certificates in IIS](../../assets/iis_server_certificates.png)
+![Server Certificates in IIS](../assets/iis_server_certificates.png)
 
 ### Bind the Certificate to HTTPS
 
@@ -68,6 +68,6 @@ Start by opening IIS Manager by searching for IIS Manager.
 - Change type to https.
 - For SSL Certificate, choose the previously imported certificate.
 
-![Bind HTTPS Certificate](../../assets/bind_certificate_to_https.png)
+![Bind HTTPS Certificate](../assets/bind_certificate_to_https.png)
 
 	

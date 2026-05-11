@@ -206,7 +206,7 @@ exactly as if the task had called `plombery.get_logger()` directly.
 - **The handler imports `plombery.pipeline.context` lazily.** This keeps
     `arcpy_orchestration` usable in environments where Plombery is not installed.
     The import only happens on the first log record after a task starts.
-- **`PlomberyHandler` does not honour Plombery's log-level filters in the UI.** All
+- **`PlomberyHandler` does not honor Plombery's log-level filters in the UI.** All
     records the package logger accepts will reach the run logger. Filter at the
     `arcpy_orchestration` logger level (the `level=` argument) if you need to suppress
     noisy modules.
