@@ -5,21 +5,9 @@ channels:
   - conda-forge
 
 dependencies:
-  - appnope
-  - arcgis
-  - arcgis-mapping
   - black>=21
-  - h3-py
-  - jupyterlab
-  - jupyterlab_code_formatter
-  - nodejs
+  - openpyxl
   - pip
-  - pytest
-  - pyarrow
-  - pyyaml
-  - scipy
-  - scikit-learn
-  - tqdm
   - pip:
     - bump2version
     - mkdocs
