@@ -30,12 +30,21 @@ environments:
   default:
     logging:
       level: DEBUG
+      logging_directory: "logs" # relative to project root; set to null to disable file logging
     data:
       input: "data/raw/input_data.csv"
       output: "data/processed/processed.gdb/output_data"
     spatial:
       default_crs: "EPSG:4326"  # CRS to use when not specified by data source
       default_unit: "meters"    # Unit for distance calculations (e.g., "meters", "degrees")
+      working_wkid: 5070        # NAD83 / Conus Albers — projected CRS for measurement
+    park_access:
+      walk_distance_m: 800              # ~10-minute walk
+      parks_fc: "data/raw/raw.gdb/parks"
+      parcels_fc: "data/raw/raw.gdb/parcels"
+      value_field: "TOTAL_VALUE"
+      output_parcels_fc: "data/processed/processed.gdb/parcels_near_parks"
+      output_summary_path: "data/processed/parcels_near_parks_summary.xlsx"
 
   dev:
     # inherits all defaults; override only what differs
