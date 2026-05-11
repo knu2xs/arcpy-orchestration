@@ -54,7 +54,7 @@ Use log levels consistently and frequently throughout the codebase:
 |---|---|
 | `DEBUG` | Detailed diagnostic info useful when troubleshooting: variable values, loop counts, intermediate results |
 | `INFO` | Normal progress milestones: function entry/exit, key steps completed, record counts |
-| `WARNING` | Unexpected but recoverable conditions: missing optional data, fallback behaviour triggered |
+| `WARNING` | Unexpected but recoverable conditions: missing optional data, fallback behavior triggered |
 | `ERROR` | A specific operation failed and could not complete, but execution can continue |
 | `CRITICAL` | A severe failure that will prevent the program from continuing |
 

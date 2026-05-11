@@ -315,7 +315,7 @@ Prefer `conda-forge` or `esri` channels for conda packages. Use the `pip:` block
 - Avoid global variables; pass dependencies explicitly as parameters
 - Keep functions small and focused on a single responsibility; prefer composing small functions
   over large multi-step ones
-- Use comments to explain *why* code does something, not *what* it does; favour self-documenting
+- Use comments to explain *why* code does something, not *what* it does; favor self-documenting
   names and structure first
 - Avoid hardcoding values; use `config` or environment variables (see §4)
 - Use `pathlib.Path` instead of `os.path` or manual string manipulation for all file paths
@@ -737,7 +737,7 @@ Use log levels consistently and frequently throughout the codebase:
 |---|---|
 | `DEBUG` | Detailed diagnostic info useful when troubleshooting: variable values, loop counts, intermediate results |
 | `INFO` | Normal progress milestones: function entry/exit, key steps completed, record counts |
-| `WARNING` | Unexpected but recoverable conditions: missing optional data, fallback behaviour triggered |
+| `WARNING` | Unexpected but recoverable conditions: missing optional data, fallback behavior triggered |
 | `ERROR` | A specific operation failed and could not complete, but execution can continue |
 | `CRITICAL` | A severe failure that will prevent the program from continuing |
 
