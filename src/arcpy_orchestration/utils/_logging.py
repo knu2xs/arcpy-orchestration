@@ -56,7 +56,54 @@ import logging
 from pathlib import Path
 from typing import Union, Optional
 
-__all__ = ["get_logger", "format_df_for_logging", "ArcpyHandler"]
+__all__ = ["get_logger", "format_df_for_logging", "ArcpyHandler", "PlomberyHandler"]
+
+
+class PlomberyHandler(logging.Handler):
+    """
+    Logging handler that forwards log records into the active Plombery run logger,
+    making ``arcpy_orchestration`` log messages visible in the Plombery web interface.
+
+    Records are silently discarded when no Plombery pipeline context is active
+    (e.g. during module import or outside a task), so it is safe to install this
+    handler unconditionally at module scope in an orchestrator script.
+
+    Formatting is intentionally left to Plombery's own ``JsonFormatter`` which is
+    already attached to the run logger — do not call ``setFormatter`` on this handler.
+
+    Install once at the top of a Plombery orchestrator script to route all
+    ``arcpy_orchestration`` log output to the Plombery UI:
+
+    ``` python
+    from arcpy_orchestration.utils import get_logger
+
+    get_logger("arcpy_orchestration", level="DEBUG", add_plombery_handler=True)
+    ```
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """
+        Forward the record to the Plombery run logger for the current pipeline context.
+
+        Args:
+            record: The log record to forward.
+        """
+        try:
+            from plombery.pipeline.context import pipeline_context, task_context, run_context
+
+            task = task_context.get(None)
+            pipeline_run = run_context.get()
+
+            logger_name = f"plombery.{pipeline_run.id}"
+            if task:
+                logger_name += f"-{task.id}"
+
+            plombery_logger = logging.getLogger(logger_name)
+            if plombery_logger.handlers:
+                plombery_logger.handle(record)
+        except (LookupError, ImportError):
+            # No active Plombery pipeline context, or Plombery not installed; discard silently.
+            pass
 
 
 class ArcpyHandler(logging.Handler):
@@ -132,6 +179,7 @@ def get_logger(
     propagate: bool = True,
     add_stream_handler: bool = False,
     add_arcpy_handler: bool = False,
+    add_plombery_handler: bool = False,
 ) -> logging.Logger:
     """
     Get Python `logging.Logger` configured to provide stream, file or, if available, ArcPy output.
@@ -223,6 +271,11 @@ def get_logger(
         ah = ArcpyHandler()
         ah.setFormatter(log_frmt)
         logger.addHandler(ah)
+
+    # if requested, add handler to forward log records to the active Plombery run logger
+    if add_plombery_handler:
+        if not any(isinstance(h, PlomberyHandler) for h in logger.handlers):
+            logger.addHandler(PlomberyHandler())
 
     # if a path for the logfile is provided, log results to the file
     if logfile_path is not None:

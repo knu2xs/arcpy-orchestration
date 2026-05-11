@@ -14,4 +14,11 @@ from ._main import example_function, ExampleObject
 __all__ = ["config", "example_function", "ExampleObject", "utils"]
 
 # configure package-level logging
-logger = utils.get_logger("arcpy_orchestration", level="DEBUG", add_stream_handler=False)
+# `add_plombery_handler=True` is safe even when Plombery is not installed or no
+# pipeline is running — the handler silently discards records in those cases.
+logger = utils.get_logger(
+    "arcpy_orchestration",
+    level="DEBUG",
+    add_stream_handler=False,
+    add_plombery_handler=True,
+)
