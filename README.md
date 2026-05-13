@@ -15,16 +15,25 @@ that with off-the-shelf, open-source components combined with ArcGIS Pro.
 - A working ArcPy data pipeline (parcels within walking distance of a public
   park, summarized to an Excel workbook) that runs end-to-end on real Thurston
   County, WA open data.
-- A web-based orchestration UI ([Plombery](https://lucafaggianelli.com/plombery/))
-  that lists pipelines, exposes a "run now" button, schedules recurring runs,
-  and streams live logs to the browser.
+- A web-based orchestration UI in two interchangeable flavors — pick whichever
+  fits your team:
+    - **[Plombery](https://lucafaggianelli.com/plombery/)** — single-process,
+      lightweight FastAPI app; minimal moving parts and a fast path to a
+      working UI.
+    - **[Dagster](https://dagster.io/)** — webserver + daemon split with
+      richer scheduling, sensors, and run observability for teams that want
+      first-class data-orchestration tooling.
+
+  Both list pipelines, expose a "run now" button, schedule recurring runs,
+  and stream live logs to the browser.
 - A deployment recipe — IIS as the HTTPS-terminating reverse proxy, Servy as
-  the Windows-service wrapper — for hosting the orchestrator as a managed
+  the Windows-service wrapper — for hosting either orchestrator as a managed
   background service on any Windows server with ArcGIS Pro installed.
 - A reusable Python package (`arcpy_orchestration`) demonstrating project
   conventions for logging, configuration, CRS handling, temporary-FGDB
-  management, and Plombery integration. Logs from any package module
-  automatically surface in the Plombery UI for the active run.
+  management, and integration with both Plombery and Dagster. Logs from any
+  package module automatically surface in whichever orchestrator UI is
+  active for the run.
 
 **Who it is for**
 
@@ -33,11 +42,19 @@ that with off-the-shelf, open-source components combined with ArcGIS Pro.
 - Developers looking for a concrete, opinionated example of structuring an
   ArcPy codebase for production use rather than ad-hoc scripting.
 
-**Getting started in five minutes**: clone, `make env`, run
-`python scripts/setup_data.py` to download sample data, then
-`python scripts/plombery_orchestrator.py` and open
-[http://localhost:8000](http://localhost:8000). Full deployment instructions
-live under [`docsrc/mkdocs/03_setup.md`](docsrc/mkdocs/03_setup.md).
+**Getting started in five minutes**: clone, `make env`, then run
+`python scripts/setup_data.py` to download sample data. From there, pick an
+orchestrator:
+
+- **Plombery** — `python scripts/plombery_orchestrator.py`, then open
+  [http://localhost:8000](http://localhost:8000). Full deployment instructions
+  live under
+  [`docsrc/mkdocs/plombery_setup_instructions.md`](docsrc/mkdocs/plombery_setup_instructions.md).
+- **Dagster** — set `DAGSTER_HOME` to the project's `dagster_home/` directory,
+  then run `dagster dev -f scripts/dagster_definitions.py` and open
+  [http://localhost:3000](http://localhost:3000). Full deployment instructions
+  live under
+  [`docsrc/mkdocs/dagster_setup_instructions.md`](docsrc/mkdocs/dagster_setup_instructions.md).
 <!--end-->
 
 <p><small>Project based on the <a target="_blank" href="https://github.com/knu2xs/cookiecutter-geoai">cookiecutter 

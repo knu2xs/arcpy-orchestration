@@ -1,5 +1,13 @@
 # Dagster — Production Deployment Setup
 
+!!! tip "Choosing an orchestrator"
+    This project supports two interchangeable web orchestrators. This page
+    covers **Dagster** — a webserver + daemon split with a richer model of
+    jobs, schedules, sensors, and run observability. If you want a lighter,
+    single-process alternative, see the
+    [Plombery setup instructions](plombery_setup_instructions.md) instead.
+    See [Why this approach?](why_this_approach.md) for the full trade-off.
+
 This guide walks through standing up the project's ArcPy pipeline as a
 production Dagster deployment on a Windows server. The end result is a
 scheduled, monitored, self-restarting orchestrator accessible to users over

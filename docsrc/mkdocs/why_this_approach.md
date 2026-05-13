@@ -4,11 +4,12 @@ ArcGIS Notebook Server is an excellent platform for exploratory analysis,
 sharing analytical narratives, and lightweight scheduled work. It is **not**
 always the right host for production scheduled geoprocessing. This document
 explains the trade-offs and why this project hosts scheduled ArcPy work in
-ArcGIS Pro's Python environment behind a Plombery web UI instead.
+ArcGIS Pro's Python environment behind a web UI (Plombery or Dagster)
+instead.
 
 ## Quick comparison
 
-| Concern | ArcGIS Notebook Server | This project (ArcGIS Pro + Plombery + Servy) |
+| Concern | ArcGIS Notebook Server | This project (ArcGIS Pro + Plombery / Dagster + Servy) |
 |---|---|---|
 | Python runtime | Curated Notebook runtime image (`standard` / `advanced`) | Full ArcGIS Pro conda env (any package the Pro env supports) |
 | ArcPy surface | Notebook runtime — subset of toolboxes and extensions | Full Pro install — every licensed extension and toolbox |
@@ -161,21 +162,34 @@ plain `.py` modules. The result is:
 
 ## 5. Operations, monitoring, and lifecycle
 
-The orchestration layer in this project (Plombery + Servy + IIS) is
-purpose-built for the "scheduled background work" problem:
+The orchestration layer in this project (Plombery *or* Dagster, plus Servy
+and IIS) is purpose-built for the "scheduled background work" problem.
+The project ships first-class support for two interchangeable web
+orchestrators so teams can pick whichever fits their operational maturity:
 
-- **Plombery** exposes a web UI with a per-pipeline page, a *Run now*
-    button, parameterised manual runs, schedule editing, and per-run
-    logs streamed live over WebSockets. Failures are highlighted; logs
-    are persisted as JSONL on disk for downstream ingestion.
-- **Servy** keeps the orchestrator process alive across reboots and
-    crashes, captures `stdout` / `stderr` with rotation, and lets you
-    change the service account, recovery actions, and environment
-    variables through a UI — without writing a Windows service in C#
-    or relying on Task Scheduler quirks.
+- **[Plombery](plombery_setup_instructions.md)** — single-process FastAPI
+    app exposing a per-pipeline page, a *Run now* button, parameterised
+    manual runs, schedule editing, and per-run logs streamed live over
+    WebSockets. Failures are highlighted; logs are persisted as JSONL on
+    disk for downstream ingestion. Minimal moving parts and a fast path
+    to a working UI — the right starting point for most teams.
+- **[Dagster](dagster_setup_instructions.md)** — webserver + daemon split
+    with a richer model of jobs, ops, schedules, sensors, partitions, and
+    run observability. Heavier to deploy (two long-running processes
+    instead of one) but the better fit for teams that want first-class
+    data-orchestration tooling, lineage, and a path to scaling beyond a
+    single host.
+- **Servy** keeps whichever orchestrator process(es) you choose alive
+    across reboots and crashes, captures `stdout` / `stderr` with
+    rotation, and lets you change the service account, recovery actions,
+    and environment variables through a UI — without writing a Windows
+    service in C# or relying on Task Scheduler quirks.
 - **IIS** provides standard, audited HTTPS termination using the
     enterprise certificate store and the same authentication primitives
     every other internal web application uses.
+
+The rest of this page's arguments — identity, hardware, software parity,
+code organization, licensing — apply identically to either choice.
 
 ArcGIS Notebook Server *does* offer a scheduler, but it is intentionally
 simple: one schedule per notebook, no notion of per-task fan-out, no

@@ -1,5 +1,13 @@
 # Production Deployment Setup
 
+!!! tip "Choosing an orchestrator"
+    This project supports two interchangeable web orchestrators. This page
+    covers **Plombery** — a single-process FastAPI app that is the lightest
+    path to a working UI. If you want a richer scheduling and observability
+    model (at the cost of running two processes), see the
+    [Dagster setup instructions](dagster_setup_instructions.md) instead.
+    See [Why this approach?](why_this_approach.md) for the full trade-off.
+
 End-to-end instructions for hosting the Plombery orchestrator on a Windows
 server so it runs as a managed background service and is reachable from the
 network over HTTPS. The deployment stack is:
