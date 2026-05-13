@@ -39,10 +39,6 @@ flowchart LR
     servy -. manages .-> daemon
 ```
 
----
-
-## 1. Install and Configure IIS
-
 IIS is the public front door for the deployment: it terminates HTTPS at the
 server's hostname and forwards traffic to the Dagster web UI running locally
 on port 3000. Configuring it first means the reverse-proxy rule is in place
@@ -239,10 +235,47 @@ compute_logs:
     base_dir: "C:\\projects\\arcpy-orchestration\\dagster_home\\compute_logs"
 ```
 
-!!! tip "PostgreSQL for team deployments"
-    For a shared deployment where multiple team members need to query run
-    history, replace the `sqlite:` block with a `postgres:` block. See the
-    [Dagster PostgreSQL docs](https://docs.dagster.io/deployment/dagster-instance#postgresql).
+!!! warning "SQLite is not recommended for production"
+
+    These instructions configure Dagster's run storage, event log, and compute
+    log backends using **SQLite** (the default). SQLite is fine for a single
+    developer evaluating the stack, but Dagster explicitly
+    [recommends PostgreSQL for production deployments](https://docs.dagster.io/guides/deploy/dagster-instance#postgresql--mysql-recommended-for-production)
+    for several reasons:
+
+    - SQLite uses file-level locking, so concurrent writes from
+      `dagster-webserver` and `dagster-daemon` can produce lock contention
+      under load.
+    - Large run histories degrade SQLite read performance over time.
+    - SQLite files are not safe to place on a network share or cloud-mounted
+      drive, which limits backup strategies.
+    - PostgreSQL supports Dagster's
+      [run concurrency limits](https://docs.dagster.io/guides/operate/managing-concurrency)
+      and [auto-materialisation](https://docs.dagster.io/guides/build/assets/auto-materialize)
+      features more reliably.
+
+    To switch to PostgreSQL, replace the `storage:` block in
+    `dagster_home/dagster.yaml` (§3.2) with:
+
+    ```yaml
+    storage:
+      postgres:
+        postgres_db:
+          username: dagster
+          password:
+            env: DAGSTER_PG_PASSWORD
+          hostname: localhost
+          db_name: dagster
+          port: 5432
+    ```
+
+    Store the password in an environment variable (`DAGSTER_PG_PASSWORD`) added
+    to both Servy service configs (§6.1 and §6.2 **Advanced → Environment
+    Variables**) rather than in the YAML file. See the
+    [Dagster instance configuration reference](https://docs.dagster.io/guides/deploy/dagster-instance)
+    for the full set of options and the
+    [`dagster-postgres` package](https://docs.dagster.io/api/python-api/libraries/dagster-postgres)
+    for the required additional dependency (`pip install dagster-postgres`).
 
 ### 3.3 `workspace.yaml` — Code Location
 
