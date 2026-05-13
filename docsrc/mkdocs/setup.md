@@ -316,6 +316,14 @@ of *this* project no edits are required — the rest of this section explains
 the patterns the file uses so you can apply the same structure when adapting
 the project, or porting these conventions to a pipeline of your own.
 
+!!! note "Assets, not ops"
+    This file uses Dagster's **software-defined asset** model (`@asset`,
+    `@multi_asset`) rather than the older `@op` / `@job` model. Dagster
+    [explicitly recommends assets](https://docs.dagster.io/guides/build/assets)
+    for new pipelines because they add an asset catalog, per-output
+    materialization history, and staleness tracking that ops lack. The
+    underlying compute is identical — `@asset` compiles to an op internally.
+
 ### 4.1 What the file is responsible for
 
 A Dagster definitions module has four jobs:
@@ -323,9 +331,10 @@ A Dagster definitions module has four jobs:
 1. **Make the project package importable** when Dagster loads the file from a
     working directory of its own choosing (it does not respect a
     `pip install -e .` happening in some other shell).
-2. **Translate plain Python functions into Dagster ops** — the unit Dagster
-    knows how to schedule, retry, log, and visualize.
-3. **Wire those ops into a `@job`** that defines the dependency graph.
+2. **Declare each pipeline output as a named asset** — an object in persistent
+    storage that Dagster can track, visualize, and check for staleness.
+3. **Build a job from an asset selection** so the scheduler can materialize the
+    whole group in dependency order.
 4. **Expose a top-level `Definitions` object** named exactly the value listed
     under `attribute:` in `workspace.yaml` (here, `defs`).
 
@@ -348,10 +357,9 @@ if importlib.util.find_spec("arcpy_orchestration") is None:
 
 In a properly provisioned conda env (§2.2) the editable install puts
 `arcpy_orchestration` on `sys.path` and the `if` branch is a no-op. The
-fallback exists so that a developer who clones the repo and runs `dagster
-dev -f scripts/dagster_definitions.py` *before* running `pip install -e .` still
-gets a working module rather than a confusing `ModuleNotFoundError` from
-inside the daemon.
+fallback exists so that a developer who runs `dagster dev -f
+scripts/dagster_definitions.py` *before* `pip install -e .` still gets a
+working module rather than a confusing `ModuleNotFoundError`.
 
 !!! tip "Apply this pattern to your own definitions"
     Always derive `DIR_PRJ` from `Path(__file__)`, not from the current
@@ -364,13 +372,10 @@ inside the daemon.
 import arcpy_orchestration  # noqa: F401, E402
 ```
 
-This single line ensures every module-level logger configured by the package
-is initialised before any op runs. Because Dagster captures records on the
-**root** Python logger during op execution, and `arcpy_orchestration` module
-loggers propagate by default, this is the *only* configuration required for
-package log output to appear in the Dagster UI. See §4.3 below.
+This ensures every module-level logger configured by the package is
+initialised before any asset runs. See §4.3 for details.
 
-#### Resolve config values at module scope, not inside ops
+#### Resolve config values at module scope, not inside assets
 
 ```python
 WORKING_WKID: int = config.spatial.working_wkid
@@ -379,66 +384,82 @@ PARKS_FC: str = str(DIR_PRJ / config.park_access.parks_fc)
 ```
 
 Reading [`config/config.yml`](../../config/config.yml) once at import time
-keeps the ops focused on orchestration. It also surfaces config errors at
-load time — `dagster-webserver` will refuse to start with a clear traceback
+keeps asset functions focused on orchestration. It also surfaces config errors
+at load time — `dagster-webserver` will refuse to start with a clear traceback
 rather than silently failing on the first scheduled run. Never hardcode WKIDs,
-distances, or paths inside an op body.
+distances, or paths inside an asset body.
 
-#### One op per logical step, with explicit `In`/`Out` types
+#### One asset per logical output, using `@multi_asset` for multiple outputs
+
+Each asset is a named, trackable object in the Dagster asset catalog. Where
+one function produces two outputs (the two projected feature classes), use
+`@multi_asset` with an `outs` dictionary:
 
 ```python
-@op(out={"parks_fc": Out(str), "parcels_fc": Out(str)})
-def project_inputs(context):
+@dg.multi_asset(
+    outs={
+        "parks_projected": dg.AssetOut(dagster_type=str, description="..."),
+        "parcels_projected": dg.AssetOut(dagster_type=str, description="..."),
+    },
+    group_name="park_access",
+)
+def project_inputs(context: dg.AssetExecutionContext) -> tuple[str, str]:
     ...
-    yield Output(parks, output_name="parks_fc")
-    yield Output(parcels, output_name="parcels_fc")
+    return parks, parcels
 ```
 
-Each op wraps a single function from `arcpy_orchestration.park_access`. The
-op layer adds nothing the underlying function doesn't already do — it only
-declares the inputs and outputs so Dagster can render the dependency graph,
-type-check connections at job-build time, and persist intermediate values.
+Downstream assets declare their dependencies simply by using the upstream
+asset name as a function argument — Dagster infers the dependency from the
+parameter name:
 
-!!! note "Ops should be thin"
-    Resist the urge to put real work directly inside an `@op`. Keeping the
-    business logic in a plain Python module (`arcpy_orchestration.park_access`
-    here) means it stays unit-testable without spinning up a Dagster instance,
-    and the same code can be reused from a notebook, a Python toolbox, or a
-    different orchestrator.
+```python
+@dg.asset(group_name="park_access")
+def parcels_near_parks(
+    context: dg.AssetExecutionContext,
+    parks_projected: str,      # ← Dagster passes the return value of project_inputs[0]
+    parcels_projected: str,    # ← Dagster passes the return value of project_inputs[1]
+) -> str:
+    ...
+```
 
-#### Use `context.log` for op-level milestones
+!!! note "Assets should be thin"
+    Resist the urge to put real work directly inside an `@asset`. Keeping the
+    business logic in `arcpy_orchestration.park_access` means it stays
+    unit-testable without Dagster, and the same code can be reused from a
+    notebook, a Python toolbox, or a different orchestrator.
+
+#### Use `context.log` for asset-level milestones
 
 ```python
 context.log.info("Wrote selected parcels to %s", result)
 ```
 
-`context.log` automatically tags the message with the run ID, step key, and
-op name in the UI. Use it for the high-level "what just happened" milestones
-that a future operator scanning the run timeline will want to see. Detailed
-diagnostics (`logger.debug(...)` from inside `arcpy_orchestration`) flow
-through the root-logger capture described below and end up in the same place
-without any extra plumbing.
+`context.log` tags the message with the run ID, step key, and asset name.
+Use it for the high-level milestones a future operator will scan. Detailed
+diagnostics from inside `arcpy_orchestration` flow through root-logger
+capture (§4.3) and appear in the same place without extra plumbing.
 
-#### Assemble ops into a `@job`
+#### Build a job from an asset group selection
+
+Rather than hand-wiring a `@job` body, use `define_asset_job` with an
+`AssetSelection`:
 
 ```python
-@job(description="...")
-def park_access_job() -> None:
-    parks_fc, parcels_fc = project_inputs()
-    parcels = find_parcels_near_parks(parks_fc=parks_fc, parcels_fc=parcels_fc)
-    summary = summarize(parcels_fc=parcels)
-    export(summary_df=summary)
+park_access_job = dg.define_asset_job(
+    name="park_access_job",
+    selection=dg.AssetSelection.groups("park_access"),
+    description="...",
+)
 ```
 
-The `@job` body looks like ordinary Python but is actually compiled by
-Dagster into a DAG. Pass op outputs to op inputs using **named keyword
-arguments** that match the `In(...)` keys — this makes the wiring explicit
-and survives reordering.
+Dagster resolves the execution order from the asset dependency graph
+automatically. Adding or removing assets from the `"park_access"` group
+updates the job without touching the job definition.
 
-#### Schedule the job, don't schedule the ops
+#### Schedule the job and set `execution_timezone` explicitly
 
 ```python
-park_access_daily = ScheduleDefinition(
+park_access_daily = dg.ScheduleDefinition(
     job=park_access_job,
     cron_schedule="0 0 * * *",
     name="park_access_daily",
@@ -446,33 +467,34 @@ park_access_daily = ScheduleDefinition(
 )
 ```
 
-Always set `execution_timezone` explicitly. Without it Dagster uses UTC, which
-is rarely what an analyst expects when they look at a daily-midnight cron.
+Without `execution_timezone` Dagster uses UTC, which is rarely what an
+analyst expects when they look at a daily-midnight cron.
 
 #### Expose a single `Definitions` object
 
 ```python
-defs = Definitions(
+defs = dg.Definitions(
+    assets=[project_inputs, parcels_near_parks, parcel_summary, summary_excel],
     jobs=[park_access_job],
     schedules=[park_access_daily],
 )
 ```
 
 This is the object `workspace.yaml`'s `attribute: defs` resolves to. Dagster
-will only see entities (jobs, schedules, sensors, assets, resources) that are
-listed here.
+will only see entities listed here. Assets must be explicitly enumerated;
+`define_asset_job` does not automatically pull them in.
 
 ### 4.3 Logging integration
 
-Dagster's op executor installs a handler on the Python root logger for the
-duration of each op execution. Because `arcpy_orchestration` module loggers
+Dagster's executor installs a handler on the Python root logger for the
+duration of each asset execution. Because `arcpy_orchestration` module loggers
 propagate to the root by default, **no custom handler is required** — log
 records from `arcpy_orchestration` appear automatically in the Dagster UI
 run timeline and compute logs.
 
-The `context.log` calls in the ops add op-level context (step key, run ID)
-to messages you emit directly. Use `context.log` for op-level milestones and
-trust the module loggers for detailed diagnostic output.
+The `context.log` calls in the assets add asset-level context (step key,
+run ID) to messages you emit directly. Use `context.log` for asset-level
+milestones and trust the module loggers for detailed diagnostic output.
 
 !!! note
     Dagster attaches its log capture to the standard Python root logger, which
@@ -673,9 +695,9 @@ dagster schedule start park_access_daily
 
 1. In the Dagster UI, open **Jobs → `park_access_job`**.
 2. Click **Materialize all** (or **Launch run**) to trigger a manual run.
-3. Open the run in the **Runs** view. The four ops (`project_inputs`,
-    `find_parcels_near_parks`, `summarize`, `export`) should appear in the
-    execution graph. Click any op to view its structured log output —
+3. Open the run in the **Runs** view. The four assets (`project_inputs`,
+    `parcels_near_parks`, `parcel_summary`, `summary_excel`) should appear in the
+    asset graph. Click any asset to view its structured log output —
     `arcpy_orchestration` log records appear here automatically via root-logger
     propagation (see §4.3).
 4. Confirm the output Excel workbook is written to the path defined by
