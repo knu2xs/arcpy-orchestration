@@ -595,10 +595,10 @@ fill in each tab as follows.
 Both Dagster processes read their instance configuration from `DAGSTER_HOME`.
 Add two variables:
 
-| Name | Value |
-|---|---|
-| `DAGSTER_HOME` | `C:\projects\arcpy-orchestration\dagster_home` |
-| `PROJECT_ENV` | `prod` |
+| Name | Value | Description |
+|---|---|---|
+| `DAGSTER_HOME` | `C:\projects\arcpy-orchestration\dagster_home` | Tells both Dagster processes where to find `dagster.yaml` and `workspace.yaml` and where to write run storage and compute logs. Must be identical in both service configs. |
+| `PROJECT_ENV` | `prod` | Sets the active configuration environment loaded by `arcpy_orchestration`; `prod` activates the `environments.prod` settings block in `config/config.yml`. |
 
 ---
 
@@ -641,10 +641,10 @@ Use the same account as the webserver service.
 
 #### Advanced — Environment Variables
 
-| Name | Value |
-|---|---|
-| `DAGSTER_HOME` | `C:\projects\arcpy-orchestration\dagster_home` |
-| `PROJECT_ENV` | `prod` |
+| Name | Value | Description |
+|---|---|---|
+| `DAGSTER_HOME` | `C:\projects\arcpy-orchestration\dagster_home` | Tells both Dagster processes where to find `dagster.yaml` and `workspace.yaml` and where to write run storage and compute logs. Must be identical in both service configs. |
+| `PROJECT_ENV` | `prod` | Sets the active configuration environment loaded by `arcpy_orchestration`; `prod` activates the `environments.prod` settings block in `config/config.yml`. |
 
 ---
 
