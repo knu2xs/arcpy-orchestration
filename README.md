@@ -34,13 +34,16 @@ that with off-the-shelf, open-source components combined with ArcGIS Pro.
 - Developers looking for a concrete, opinionated example of structuring an
   ArcPy codebase for production use rather than ad-hoc scripting.
 
-**Getting started in five minutes**: clone, `make env`, then run
-`python scripts/setup_data.py` to download sample data. Then set
-`DAGSTER_HOME` to the project's `dagster_home/` directory, run
-`dagster dev -f scripts/dagster_definitions.py`, and open
-[http://localhost:3000](http://localhost:3000). Full deployment instructions
-live under
+**Getting started**: production deployment of this project is a multi-step
+process — it provisions IIS as an HTTPS reverse proxy, clones the ArcGIS Pro
+`arcgispro-py3` conda environment, installs Dagster into the clone, and
+registers the `dagster-webserver` and `dagster-daemon` processes as Windows
+services via Servy. The complete walkthrough lives in
 [`docsrc/mkdocs/dagster_setup_instructions.md`](docsrc/mkdocs/dagster_setup_instructions.md).
+Additionally, an automated PowerShell installer 
+([`scripts/setup_dagster.ps1`](scripts/setup_dagster.ps1))is included, which 
+performs the same steps end-to-end on an elevated (administrator) PowerShell 
+session.
 <!--end-->
 
 <p><small>Project based on the <a target="_blank" href="https://github.com/knu2xs/cookiecutter-geoai">cookiecutter 
