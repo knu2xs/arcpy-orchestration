@@ -118,6 +118,52 @@ IIS needs one URL Rewrite rule to forward all inbound requests to it.
 3. Apply, then browse to `https://<your-host>/` — at this point you'll get a
     `502` because Plombery is not yet running; that's expected.
 
+!!! note "Hosting Plombery under a sub-path (e.g. `https://<your-host>/plombery`)"
+    If the server also hosts other applications, you may want Plombery
+    reachable at a sub-path rather than the site root. This requires two
+    coordinated changes — one in IIS and one in the orchestrator script —
+    because Plombery (FastAPI/Starlette under Uvicorn) generates redirect URLs
+    and an OpenAPI schema based on a known *root path*.
+
+    **In IIS:** replace the single rewrite rule above with one scoped to the
+    sub-path. The pattern strips the prefix before forwarding so the upstream
+    Plombery process still sees root-relative URLs:
+
+    | Field | Value |
+    |---|---|
+    | Name | `Plombery Reverse Proxy` |
+    | Match URL → Pattern | `^plombery(?:/(.*))?$` |
+    | Action type | `Rewrite` |
+    | Rewrite URL | `http://localhost:8000/{R:1}` |
+    | Append query string | checked |
+
+    **In the orchestrator script:** pass `root_path="/plombery"` to
+    `uvicorn.run(...)` in
+    [`scripts/plombery_orchestrator.py`](../../scripts/plombery_orchestrator.py)
+    so FastAPI knows it is mounted at the prefix:
+
+    ```python
+    uvicorn.run(
+        "plombery:get_app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        factory=True,
+        root_path="/plombery",
+    )
+    ```
+
+    The value passed to `root_path` must match exactly the prefix stripped by
+    the IIS rewrite rule. Restart the `ArcPy Orchestration` service via Servy
+    Manager after changing this argument.
+
+    !!! warning "Static assets may still resolve at the root"
+        Plombery's frontend is a pre-built React bundle whose asset URLs are
+        baked in at build time. If the UI loads but its JavaScript and CSS
+        requests 404, add a second IIS rewrite rule that forwards any
+        `/static/...` or `/assets/...` requests to `http://localhost:8000/`
+        unchanged, *in addition* to the prefixed rule above.
+
 ---
 
 ## 2. Install Servy

@@ -6,7 +6,9 @@ site_dir: ../docs
 nav:
   - Home: index.md
   - Why?: why_this_approach.md
-  - Setup: setup_instructions.md
+  - Setup:
+      - Plombery: plombery_setup_instructions.md
+      - Dagster: dagster_setup_instructions.md
 
 
 # add a GitHub repo link to the top navigation bar
