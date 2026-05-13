@@ -17,7 +17,7 @@ import pandas as pd
 
 from .utils import get_logger, with_temp_fgdb
 
-logger = get_logger(__name__, level="DEBUG", add_stream_handler=False)
+logger = get_logger("arcpy_orchestration.park_access", level="DEBUG", add_stream_handler=False)
 
 
 def _ensure_projected(fc: str | os.PathLike[str], working_wkid: int) -> None:
@@ -72,11 +72,14 @@ def project_to_working_crs(
         f"Projecting '{in_fc}' from WKID {src_sr.factoryCode} "
         f"to WKID {working_wkid}."
     )
-    arcpy.management.Project(
-        in_dataset=in_fc,
-        out_dataset=str(out_fc),
-        out_coor_system=target_sr,
-    )
+
+    with arcpy.EnvManager(overwriteOutput=True):
+        arcpy.management.Project(
+            in_dataset=in_fc,
+            out_dataset=str(out_fc),
+            out_coor_system=target_sr,
+        )
+        
     return str(out_fc)
 
 
@@ -138,6 +141,10 @@ def parcels_within_walking_distance(
 
     selected_count = int(arcpy.management.GetCount(parcels_layer)[0])
     logger.info(f"Selected {selected_count:,} parcels within walking distance.")
+
+    if arcpy.Exists(out_fc):
+        logger.warning(f"Output feature class '{out_fc}' already exists and will be overwritten.")
+        arcpy.management.Delete(out_fc)
 
     arcpy.management.CopyFeatures(
         in_features=parcels_layer,
