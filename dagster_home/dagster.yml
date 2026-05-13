@@ -7,3 +7,7 @@ storage:
 compute_logs:
   local_directory:
     base_dir: "C:\\projects\\arcpy-orchestration\\dagster_home\\compute_logs"
+
+python_logs:
+  managed_python_loggers:
+    - arcpy_orchestration
