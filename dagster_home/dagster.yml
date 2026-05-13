@@ -1,0 +1,9 @@
+# .\dagster_home\dagster.yaml
+
+storage:
+  sqlite:
+    base_dir: "C:\\projects\\arcpy-orchestration\\dagster_home\\storage"
+
+compute_logs:
+  local_directory:
+    base_dir: "C:\\projects\\arcpy-orchestration\\dagster_home\\compute_logs"

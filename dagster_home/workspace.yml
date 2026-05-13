@@ -1,0 +1,6 @@
+# .\dagster_home\workspace.yaml
+
+load_from:
+  - python_file:
+      relative_path: "../scripts/dagster_definitions.py"
+      attribute: defs
