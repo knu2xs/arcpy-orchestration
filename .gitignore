@@ -98,6 +98,7 @@ docs/
 
 # exclude cookiecutter post_gen log file
 post_gen_project.log
+
 # Dagster runtime state (only commit dagster.yml and workspace.yml)
 dagster_home/*
 !dagster_home/dagster.yml
