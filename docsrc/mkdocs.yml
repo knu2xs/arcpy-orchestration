@@ -1,4 +1,4 @@
-site_name: ArcPy Orchestration 0.0.0
+site_name: ArcPy Orchestration 0.1.0.dev0
 
 docs_dir: mkdocs
 site_dir: ../docs
