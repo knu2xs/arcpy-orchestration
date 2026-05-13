@@ -272,26 +272,38 @@ load_from:
 
 ---
 
-## 4. Write the Dagster Definitions
+## 4. Understand the Dagster Definitions
 
-Create `scripts/dagster_definitions.py`. This file is the single entry point
-that Dagster loads at startup. It defines the individual ops (units of work),
-assembles them into a job (the ordered pipeline), and attaches a schedule so
-the job runs automatically.
+The pipeline's Dagster wiring lives in
+[`scripts/dagster_definitions.py`](../../scripts/dagster_definitions.py).
+This single file is the entry point referenced by
+`dagster_home/workspace.yaml` (see §3.3) and is loaded by both
+`dagster-webserver` and `dagster-daemon` at startup. For a typical deployment
+of *this* project no edits are required — the rest of this section explains
+the patterns the file uses so you can apply the same structure when adapting
+the project, or porting these conventions to a pipeline of your own.
+
+### 4.1 What the file is responsible for
+
+A Dagster definitions module has four jobs:
+
+1. **Make the project package importable** when Dagster loads the file from a
+    working directory of its own choosing (it does not respect a
+    `pip install -e .` happening in some other shell).
+2. **Translate plain Python functions into Dagster ops** — the unit Dagster
+    knows how to schedule, retry, log, and visualize.
+3. **Wire those ops into a `@job`** that defines the dependency graph.
+4. **Expose a top-level `Definitions` object** named exactly the value listed
+    under `attribute:` in `workspace.yaml` (here, `defs`).
+
+### 4.2 Key patterns and why they matter
+
+The numbered points below map directly onto sections of
+[`scripts/dagster_definitions.py`](../../scripts/dagster_definitions.py).
+
+#### Bootstrap so `arcpy_orchestration` is importable
 
 ```python
-# scripts/dagster_definitions.py
-from __future__ import annotations
-
-import importlib.util
-from pathlib import Path
-import sys
-
-from dagster import Definitions, In, OpExecutionContext, Out, Output, ScheduleDefinition, job, op
-
-# ---------------------------------------------------------------------------
-# Bootstrap: ensure arcpy_orchestration is importable
-# ---------------------------------------------------------------------------
 DIR_PRJ = Path(__file__).parent.parent
 
 if importlib.util.find_spec("arcpy_orchestration") is None:
@@ -299,134 +311,134 @@ if importlib.util.find_spec("arcpy_orchestration") is None:
     if not src_dir.exists():
         raise EnvironmentError("Unable to import arcpy_orchestration.")
     sys.path.insert(0, str(src_dir))
+```
 
-# Importing the package wires all arcpy_orchestration log output into Python's
-# standard logging hierarchy. Dagster captures root-logger records during op
-# execution automatically, so log messages from arcpy_orchestration modules
-# appear in the Dagster UI without any additional configuration. See §4.1.
+In a properly provisioned conda env (§2.2) the editable install puts
+`arcpy_orchestration` on `sys.path` and the `if` branch is a no-op. The
+fallback exists so that a developer who clones the repo and runs `dagster
+dev -f scripts/dagster_definitions.py` *before* running `pip install -e .` still
+gets a working module rather than a confusing `ModuleNotFoundError` from
+inside the daemon.
+
+!!! tip "Apply this pattern to your own definitions"
+    Always derive `DIR_PRJ` from `Path(__file__)`, not from the current
+    working directory. Dagster sets its own CWD, and relative paths derived
+    from `os.getcwd()` will silently break in production.
+
+#### Import the package once, get logging for free
+
+```python
 import arcpy_orchestration  # noqa: F401, E402
-from arcpy_orchestration import park_access  # noqa: E402
-from arcpy_orchestration.config import config  # noqa: E402
+```
 
-# ---------------------------------------------------------------------------
-# Resolve config-driven inputs once at module scope
-# ---------------------------------------------------------------------------
+This single line ensures every module-level logger configured by the package
+is initialised before any op runs. Because Dagster captures records on the
+**root** Python logger during op execution, and `arcpy_orchestration` module
+loggers propagate by default, this is the *only* configuration required for
+package log output to appear in the Dagster UI. See §4.3 below.
+
+#### Resolve config values at module scope, not inside ops
+
+```python
 WORKING_WKID: int = config.spatial.working_wkid
 WALK_DISTANCE_M: float = config.park_access.walk_distance_m
-VALUE_FIELD: str = config.park_access.value_field
+PARKS_FC: str = str(DIR_PRJ / config.park_access.parks_fc)
+```
 
-PARKS_FC = str(DIR_PRJ / config.park_access.parks_fc)
-PARCELS_FC = str(DIR_PRJ / config.park_access.parcels_fc)
-OUTPUT_PARCELS_FC = str(DIR_PRJ / config.park_access.output_parcels_fc)
-OUTPUT_SUMMARY_PATH = str(DIR_PRJ / config.park_access.output_summary_path)
+Reading [`config/config.yml`](../../config/config.yml) once at import time
+keeps the ops focused on orchestration. It also surfaces config errors at
+load time — `dagster-webserver` will refuse to start with a clear traceback
+rather than silently failing on the first scheduled run. Never hardcode WKIDs,
+distances, or paths inside an op body.
 
-_INTERIM_GDB = str(DIR_PRJ / "data" / "interim" / "interim.gdb")
-PARKS_PROJECTED_FC = f"{_INTERIM_GDB}/parks_projected"
-PARCELS_PROJECTED_FC = f"{_INTERIM_GDB}/parcels_projected"
+#### One op per logical step, with explicit `In`/`Out` types
 
-
-# ---------------------------------------------------------------------------
-# Ops — the individual units of work that make up the pipeline
-# ---------------------------------------------------------------------------
-
+```python
 @op(out={"parks_fc": Out(str), "parcels_fc": Out(str)})
-def project_inputs(context: OpExecutionContext):
-    """Project parks and parcels into the working CRS."""
-    parks = park_access.project_to_working_crs(
-        PARKS_FC, PARKS_PROJECTED_FC, WORKING_WKID
-    )
-    parcels = park_access.project_to_working_crs(
-        PARCELS_FC, PARCELS_PROJECTED_FC, WORKING_WKID
-    )
-    context.log.info("Projected parks to %s and parcels to %s", PARKS_PROJECTED_FC, PARCELS_PROJECTED_FC)
+def project_inputs(context):
+    ...
     yield Output(parks, output_name="parks_fc")
     yield Output(parcels, output_name="parcels_fc")
+```
 
+Each op wraps a single function from `arcpy_orchestration.park_access`. The
+op layer adds nothing the underlying function doesn't already do — it only
+declares the inputs and outputs so Dagster can render the dependency graph,
+type-check connections at job-build time, and persist intermediate values.
 
-@op(ins={"parks_fc": In(str), "parcels_fc": In(str)}, out=Out(str))
-def find_parcels_near_parks(
-    context: OpExecutionContext,
-    parks_fc: str,
-    parcels_fc: str,
-) -> str:
-    """Buffer parks and select parcels within walking distance."""
-    result = park_access.parcels_within_walking_distance(
-        parks_fc=parks_fc,
-        parcels_fc=parcels_fc,
-        out_fc=OUTPUT_PARCELS_FC,
-        walk_distance_m=WALK_DISTANCE_M,
-        working_wkid=WORKING_WKID,
-    )
-    context.log.info("Wrote selected parcels to %s", result)
-    return result
+!!! note "Ops should be thin"
+    Resist the urge to put real work directly inside an `@op`. Keeping the
+    business logic in a plain Python module (`arcpy_orchestration.park_access`
+    here) means it stays unit-testable without spinning up a Dagster instance,
+    and the same code can be reused from a notebook, a Python toolbox, or a
+    different orchestrator.
 
+#### Use `context.log` for op-level milestones
 
-@op(ins={"parcels_fc": In(str)})
-def summarize(context: OpExecutionContext, parcels_fc: str):
-    """Compute an overall summary of the selected parcels."""
-    result = park_access.summarize_parcels(
-        parcels_fc=parcels_fc,
-        value_field=VALUE_FIELD,
-    )
-    context.log.info("Summarised %d parcels", len(result))
-    return result
+```python
+context.log.info("Wrote selected parcels to %s", result)
+```
 
+`context.log` automatically tags the message with the run ID, step key, and
+op name in the UI. Use it for the high-level "what just happened" milestones
+that a future operator scanning the run timeline will want to see. Detailed
+diagnostics (`logger.debug(...)` from inside `arcpy_orchestration`) flow
+through the root-logger capture described below and end up in the same place
+without any extra plumbing.
 
-@op
-def export(context: OpExecutionContext, summary_df) -> str:
-    """Write the parcel summary to an Excel workbook."""
-    result = park_access.export_summary(summary_df, OUTPUT_SUMMARY_PATH)
-    context.log.info("Exported summary to %s", result)
-    return result
+#### Assemble ops into a `@job`
 
-
-# ---------------------------------------------------------------------------
-# Job  (Dagster equivalent of register_pipeline)
-# ---------------------------------------------------------------------------
-
-@job(description=(
-    "Refresh the list of parcels within walking distance of a public park "
-    "and summarize overall parcel count and value."
-))
+```python
+@job(description="...")
 def park_access_job() -> None:
-    """Assemble the four ops into an ordered pipeline."""
     parks_fc, parcels_fc = project_inputs()
     parcels = find_parcels_near_parks(parks_fc=parks_fc, parcels_fc=parcels_fc)
     summary = summarize(parcels_fc=parcels)
     export(summary_df=summary)
+```
 
+The `@job` body looks like ordinary Python but is actually compiled by
+Dagster into a DAG. Pass op outputs to op inputs using **named keyword
+arguments** that match the `In(...)` keys — this makes the wiring explicit
+and survives reordering.
 
-# ---------------------------------------------------------------------------
-# Schedule — defines when the job runs automatically
-# ---------------------------------------------------------------------------
+#### Schedule the job, don't schedule the ops
 
+```python
 park_access_daily = ScheduleDefinition(
     job=park_access_job,
-    cron_schedule="0 0 * * *",  # midnight daily
+    cron_schedule="0 0 * * *",
     name="park_access_daily",
     execution_timezone="America/Los_Angeles",
 )
+```
 
-# ---------------------------------------------------------------------------
-# Definitions  (top-level object referenced by workspace.yaml)
-# ---------------------------------------------------------------------------
+Always set `execution_timezone` explicitly. Without it Dagster uses UTC, which
+is rarely what an analyst expects when they look at a daily-midnight cron.
 
+#### Expose a single `Definitions` object
+
+```python
 defs = Definitions(
     jobs=[park_access_job],
     schedules=[park_access_daily],
 )
 ```
 
-### 4.1 Logging Integration
+This is the object `workspace.yaml`'s `attribute: defs` resolves to. Dagster
+will only see entities (jobs, schedules, sensors, assets, resources) that are
+listed here.
+
+### 4.3 Logging integration
 
 Dagster's op executor installs a handler on the Python root logger for the
 duration of each op execution. Because `arcpy_orchestration` module loggers
 propagate to the root by default, **no custom handler is required** — log
-records from `arcpy_orchestration` appear automatically in the Dagster UI run
-timeline and compute logs.
+records from `arcpy_orchestration` appear automatically in the Dagster UI
+run timeline and compute logs.
 
-The `context.log` calls above add op-level context (step key, run ID) to
-messages you emit directly. Use `context.log` for op-level milestones and
+The `context.log` calls in the ops add op-level context (step key, run ID)
+to messages you emit directly. Use `context.log` for op-level milestones and
 trust the module loggers for detailed diagnostic output.
 
 !!! note
@@ -632,7 +644,7 @@ dagster schedule start park_access_daily
     `find_parcels_near_parks`, `summarize`, `export`) should appear in the
     execution graph. Click any op to view its structured log output —
     `arcpy_orchestration` log records appear here automatically via root-logger
-    propagation (see §4.1).
+    propagation (see §4.3).
 4. Confirm the output Excel workbook is written to the path defined by
     `park_access.output_summary_path` in
     [`config/config.yml`](../../config/config.yml).
