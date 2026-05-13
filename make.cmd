@@ -68,20 +68,17 @@ GOTO %1
     CALL conda run -p %CONDA_DIR% mkdocs serve -f ./docsrc/mkdocs.yml
     GOTO end
 
-:: Build the local environment from the environment file
+:: Build the local environment by cloning the ArcGIS Pro Python env
 :env
-    :: Create new environment from environment file
+    :: Create new environment by cloning the ArcGIS Pro environment
     CALL conda create -p %CONDA_DIR% --clone %ARCGIS_PRO_PYTHON% -y
     GOTO add_dependencies
 
-:: Add python dependencies from environment.yml to the project environment
+:: Install the local package (with dev and mkdocs extras) into the project environment
 :add_dependencies
-        
-    :: Add more fun stuff from environment file
-    CALL conda env update -p %CONDA_DIR% -f environment.yml
 
-    :: Install the local package in development (experimental) mode
-    CALL conda run -p %CONDA_DIR% python -m pip install -e .
+    :: Install the local package in editable mode with dev and mkdocs extras
+    CALL conda run -p %CONDA_DIR% python -m pip install -e .[dev,mkdocs]
 
     GOTO end
 

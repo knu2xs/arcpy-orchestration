@@ -48,7 +48,7 @@ The rules most often violated. The full rationale is below.
 - **SQL/DuckDB**: Externalise non-trivial queries to `src/arcpy_orchestration/sql/*.sql`. Always use bind parameters — never f-string interpolation.
 - **Tests**: Mirror `src/` layout in `testing/`. One behavior per test. Use fixtures from `conftest.py`.
 - **Scope**: Don't refactor unrelated code. Don't rename or change signatures of public symbols without approval.
-- **Dependencies**: Don't add packages to `pyproject.toml` or `environment.yml` without flagging the addition.
+- **Dependencies**: Don't add packages to `pyproject.toml` without flagging the addition.
 
 ---
 
@@ -258,54 +258,48 @@ your local `secrets.yml` (with real values).
 
 ### 6. Dependency Management
 
-This project uses two complementary files to manage dependencies. Keep them in sync when adding
-or removing packages.
+All project dependencies are declared in `pyproject.toml`. There is no `environment.yml`;
+the project's conda env is created by cloning ArcGIS Pro's `arcgispro-py3` and then doing an
+editable install of this package with the appropriate extras (see §9 / `make env`).
 
-#### 6.1 `pyproject.toml` — Runtime dependencies
+#### 6.1 `pyproject.toml` `[project] dependencies` — Runtime dependencies
 
-`pyproject.toml` declares the packages that **`arcpy_orchestration` itself requires to
-run**. Add a dependency here when:
+Declare a dependency here when:
 
 - A module inside `src/arcpy_orchestration/` contains a top-level `import` of that package
-- The package must be present for the installed library to function correctly
+- The package must be present for the installed library to function correctly at runtime
 
 ```toml
 [project]
 dependencies = [
-    "some-package>=1.0",
+    "openpyxl",
 ]
 ```
 
 > **Note:** Do **not** add `arcpy` here. ArcPy is provided implicitly by the ArcGIS Pro
 > conda environment and cannot be installed via pip or conda in the normal way.
 
-#### 6.2 `environment.yml` — Development environment
+#### 6.2 `[project.optional-dependencies]` — Extras
 
-`environment.yml` defines the full **conda environment** used for development, testing, and
-documentation. Add a package here when it is needed for any of the following, but is *not* a
-runtime dependency of `arcpy_orchestration`:
+Everything that is *not* a runtime dependency of `arcpy_orchestration` belongs in an
+optional-dependencies group ("extra") in `pyproject.toml`. The current groups are:
 
-- **Development tooling**: `black`, `pytest`, `jupyterlab`, `jupyterlab_code_formatter`
-- **Documentation**: `mkdocs`, `mkdocs-material`, `mkdocstrings[python]`, `mkdocs-jupyter`, etc.
-- **Data science / analysis**: `scipy`, `scikit-learn`, `h3-py`, `tqdm`, etc.
-- **Build / release tooling**: `bump-my-version` (the maintained successor to `bump2version`)
+- **`dev`** — development tooling: `black`, `bump2version`, test runners, etc.
+- **`mkdocs`** — documentation build: `mkdocs`, `mkdocs-material`, `mkdocstrings[python]`,
+  and the MkDocs plugins used by `docsrc/mkdocs.yml`.
 
-Prefer `conda-forge` or `esri` channels for conda packages. Use the `pip:` block inside
-`environment.yml` for packages that are only available on PyPI (e.g., the MkDocs plugins).
-
-> **Note:** ArcPy is also **not** listed in `environment.yml`; it is pre-installed in the
-> ArcGIS Pro conda base environment and inherited automatically.
+Install extras with `pip install -e .[dev,mkdocs]`. The `make env` target does this
+automatically after cloning `arcgispro-py3`.
 
 #### 6.3 Decision guide
 
 | Scenario | Add to |
 |---|---|
 | `import foo` inside `src/arcpy_orchestration/` | `pyproject.toml` `[project] dependencies` |
-| MkDocs plugin or theme | `environment.yml` pip block |
-| Test-only package (`pytest-*`, `pytest-mock`) | `environment.yml` conda/pip block |
-| JupyterLab extension or kernel | `environment.yml` conda block |
-| Conda-distributed data science library | `environment.yml` conda block |
-| ArcPy or any `arcpy.*` import | Neither — provided by ArcGIS Pro |
+| `black`, `bump2version`, `pytest-*`, `pytest-mock` | `[project.optional-dependencies] dev` |
+| MkDocs plugin or theme, `mkdocstrings`, `mkdocs-jupyter` | `[project.optional-dependencies] mkdocs` |
+| New use-case (e.g. notebooks, data-science) | Add a new extra (`notebooks`, `analysis`, ...) |
+| ArcPy or any `arcpy.*` import | Nowhere — provided by ArcGIS Pro |
 
 ### 7. Spatial Data Science Best Practices
 
@@ -635,7 +629,7 @@ This project includes a `Makefile` (and `make.cmd` for Windows) with common comm
 #### 10.3 Scope Discipline
 
 - **Stay on task**: Limit changes to the files and functions directly relevant to the request
-- **Dependencies**: Do not add packages to `pyproject.toml` or `environment.yml` without flagging
+- **Dependencies**: Do not add packages to `pyproject.toml` without flagging
   the addition — new dependencies need review
 - **Pinned versions**: Do not upgrade pinned dependency versions as a side effect of other changes
 

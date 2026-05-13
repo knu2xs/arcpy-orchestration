@@ -27,8 +27,21 @@ license = {text = "Apache-2.0"}
 
 
 dependencies = [
-    "plombery>=0.5.2",
-    "uvicorn>=0.30"
+    "openpyxl",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=21",
+    "bump2version",
+]
+mkdocs = [
+    "mkdocs",
+    "mkdocs-glightbox",
+    "mkdocs-include-markdown-plugin",
+    "mkdocs-jupyter",
+    "mkdocs-material",
+    "mkdocstrings[python]>=0.18",
 ]
 
 [tool.setuptools.packages.find]

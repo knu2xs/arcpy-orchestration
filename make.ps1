@@ -96,19 +96,15 @@ $Tasks = [ordered]@{
             # Clone the ArcGIS Pro conda environment
             conda create -p $CondaDir --clone $ArcGISProPython -y
 
-            # Layer on project-specific dependencies
-            conda env update -p $CondaDir -f environment.yml
-
-            # Install the local package in development mode
-            conda run -p $CondaDir python -m pip install -e .
+            # Install the local package in editable mode with dev and mkdocs extras
+            conda run -p $CondaDir python -m pip install -e .[dev,mkdocs]
         }
     }
 
     add_dependencies = @{
-        Desc   = "Add dependencies from environment.yml and install local package"
+        Desc   = "Install local package with dev and mkdocs extras"
         Action = {
-            conda env update -p $CondaDir -f environment.yml
-            conda run -p $CondaDir python -m pip install -e .
+            conda run -p $CondaDir python -m pip install -e .[dev,mkdocs]
         }
     }
 

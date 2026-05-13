@@ -40,7 +40,7 @@ jobs:
 
     # install python packages
     - name: Install Python Packages
-      run: pip install -r docsrc/requirements.txt
+      run: pip install .[mkdocs]
 
     # configure github pages
     - name: Setup Pages
