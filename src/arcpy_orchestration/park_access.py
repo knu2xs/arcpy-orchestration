@@ -192,6 +192,142 @@ def summarize_parcels(
     return summary
 
 
+# ---------------------------------------------------------------------------
+# Raw data setup
+# ---------------------------------------------------------------------------
+
+#: Feature service URL for Thurston County parcels.
+PARCELS_URL: str = (
+    "https://tconline.co.thurston.wa.us/server/rest/services/"
+    "Common_Layers/Parcels/FeatureServer/4"
+)
+
+#: Feature service URL for Thurston County parks.
+PARKS_URL: str = (
+    "https://map.co.thurston.wa.us/arcgis/rest/services/"
+    "Thurston/Thurston_Parks/FeatureServer/0"
+)
+
+
+def _ensure_raw_gdb(gdb_path: Path) -> str:
+    """Create ``raw.gdb`` if it does not already exist and return its string path.
+
+    Args:
+        gdb_path: Desired location of the raw file geodatabase.
+
+    Returns:
+        str: Path to the (possibly newly created) file geodatabase.
+    """
+    if arcpy.Exists(str(gdb_path)):
+        logger.debug(f"Raw file geodatabase already exists at '{gdb_path}'.")
+        return str(gdb_path)
+
+    gdb_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Creating raw file geodatabase at '{gdb_path}'.")
+    arcpy.management.CreateFileGDB(
+        out_folder_path=str(gdb_path.parent),
+        out_name=gdb_path.name,
+    )
+    return str(gdb_path)
+
+
+def _download_feature_service(
+    service_url: str,
+    out_gdb: str,
+    out_name: str,
+) -> str:
+    """Copy a feature service layer into the local file geodatabase.
+
+    Skips the download if the output feature class already exists.
+
+    Args:
+        service_url: Fully qualified URL to a feature service layer.
+        out_gdb: Path to the destination file geodatabase.
+        out_name: Output feature class name.
+
+    Returns:
+        str: Full path to the (possibly pre-existing) output feature class.
+    """
+    out_fc = f"{out_gdb}/{out_name}"
+
+    if arcpy.Exists(out_fc):
+        count = int(arcpy.management.GetCount(out_fc)[0])
+        logger.info(
+            f"'{out_fc}' already exists with {count:,} features; skipping download."
+        )
+        return out_fc
+
+    logger.info(f"Downloading '{service_url}' → '{out_fc}'.")
+    try:
+        arcpy.conversion.ExportFeatures(
+            in_features=service_url,
+            out_features=out_fc,
+        )
+    except Exception as e:
+        msg = f"Failed to export features from '{service_url}': {e}"
+        logger.error(msg)
+        raise RuntimeError(msg) from e
+
+    count = int(arcpy.management.GetCount(out_fc)[0])
+    logger.info(f"Wrote {count:,} features to '{out_fc}'.")
+    return out_fc
+
+
+def ensure_raw_data(
+    raw_gdb: str | os.PathLike[str],
+    parcels_fc_name: str = "parcels",
+    parks_fc_name: str = "parks",
+) -> tuple[str, str]:
+    """Download the Thurston County reference datasets into the raw file geodatabase.
+
+    Both datasets are sourced from the Thurston GeoData Center:
+
+    - **Parcels** (`~130 k features`) —
+      `tconline.co.thurston.wa.us/server/rest/services/Common_Layers/Parcels/FeatureServer/4`
+    - **Parks** —
+      `map.co.thurston.wa.us/arcgis/rest/services/Thurston/Thurston_Parks/FeatureServer/0`
+
+    Each dataset is skipped if the corresponding feature class already exists
+    in `raw_gdb`, making the function safe to call repeatedly.
+
+    !!! warning "Field names"
+        The real field names in the source services may not match the
+        placeholder values in `config/config.yml`. After running this function,
+        inspect the output feature classes and update the `park_access` section
+        of `config/config.yml` to reference real field names before running
+        the pipeline.
+
+    ```python
+    from arcpy_orchestration import park_access
+
+    parcels_fc, parks_fc = park_access.ensure_raw_data(
+        raw_gdb="C:/projects/arcpy-orchestration/data/raw/raw.gdb"
+    )
+    ```
+
+    Args:
+        raw_gdb: Path to the raw file geodatabase. Created automatically if it
+            does not exist.
+        parcels_fc_name: Feature class name for the parcels layer. Defaults to
+            `"parcels"`.
+        parks_fc_name: Feature class name for the parks layer. Defaults to
+            `"parks"`.
+
+    Returns:
+        tuple[str, str]: Paths to the ``(parcels_fc, parks_fc)`` feature classes.
+    """
+    raw_gdb_path = Path(raw_gdb)
+    logger.info(f"Ensuring raw data in '{raw_gdb_path}'.")
+
+    gdb = _ensure_raw_gdb(raw_gdb_path)
+
+    parcels_fc = _download_feature_service(PARCELS_URL, gdb, parcels_fc_name)
+    parks_fc = _download_feature_service(PARKS_URL, gdb, parks_fc_name)
+
+    logger.info("Raw data setup complete.")
+    return parcels_fc, parks_fc
+
+
 def export_summary(summary_df: pd.DataFrame, out_path: str | os.PathLike[str]) -> str:
     """
     Write a parcel summary to an Excel workbook.
