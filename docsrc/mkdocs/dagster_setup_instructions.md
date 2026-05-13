@@ -1,13 +1,5 @@
 # Dagster — Production Deployment Setup
 
-!!! tip "Choosing an orchestrator"
-    This project supports two interchangeable web orchestrators. This page
-    covers **Dagster** — a webserver + daemon split with a richer model of
-    jobs, schedules, sensors, and run observability. If you want a lighter,
-    single-process alternative, see the
-    [Plombery setup instructions](plombery_setup_instructions.md) instead.
-    See [Why this approach?](why_this_approach.md) for the full trade-off.
-
 This guide walks through standing up the project's ArcPy pipeline as a
 production Dagster deployment on a Windows server. The end result is a
 scheduled, monitored, self-restarting orchestrator accessible to users over
@@ -153,35 +145,60 @@ Dagster's web UI listens on `http://localhost:3000` by default.
 
 ## 2. Install Dagster
 
-Dagster is not included in the default `environment.yml`. Add the following
-packages to the `pip:` block before recreating the environment — or install
-them into an existing environment with the commands below.
+Dagster must be installed alongside `arcpy`, but installing it directly into
+the stock ArcGIS Pro `arcgispro-py3` environment is not supported — that
+environment is managed by ArcGIS Pro and pip-installing into it can break
+future Pro upgrades. Instead, **clone** `arcgispro-py3` into the project tree
+and install Dagster into the clone.
 
-```yaml
-# environment.yml — add under the pip: block
-  - dagster
-  - dagster-webserver
+!!! tip "Automated alternative"
+    The script [`scripts/setup_dagster.ps1`](../../scripts/setup_dagster.ps1)
+    performs §2.1 and §2.2 (and the rest of this guide) end-to-end from an
+    elevated PowerShell session. The manual steps below are equivalent and
+    are documented for transparency and partial reruns.
+
+### 2.1 Clone the `arcgispro-py3` environment
+
+ArcGIS Pro ships its own conda distribution. The simplest way to get a shell
+where `conda` is on `PATH` and pointed at the Pro-bundled installation is to
+open the **Python Command Prompt** that ArcGIS Pro installs:
+
+**Start → All Programs → ArcGIS → Python Command Prompt**
+
+In that prompt, change directory to the project root and run a single command
+to clone the stock environment into an `env\` directory inside the project:
+
+```
+cd C:\projects\arcpy-orchestration
+conda create --prefix ./env --clone arcgispro-py3
 ```
 
-!!! warning "Flag the dependency addition"
-    Per project conventions (§6.3 of the coding guidelines), adding new
-    packages to `environment.yml` requires a review. Flag this change in your
-    pull request description.
+Answer `y` when conda prompts to proceed. Using the conda binary that ships
+with ArcGIS Pro — rather than a separately installed Anaconda or Miniconda —
+ensures the clone resolves the same channels and metadata Pro itself uses.
 
-To install into an existing activated environment without recreating it:
+!!! warning "Allow time and disk space"
+    A full clone of `arcgispro-py3` typically takes 5–15 minutes and consumes
+    several GB of disk space. The clone is a complete copy, not a hard-linked
+    overlay.
 
-```powershell
+### 2.2 Install Dagster into the clone
+
+Still in the Python Command Prompt at the project root, activate the cloned
+env and install Dagster with `pip`:
+
+```
+conda activate ./env
 pip install dagster dagster-webserver
 ```
 
 Verify the install:
 
-```powershell
+```
 dagster --version
 dagster-webserver --version
 dagster-daemon --version
 ```
-
 ---
 
 ## 3. Configure the Dagster Instance
@@ -437,10 +454,11 @@ Dagster requires **two separate Servy services** — one for `dagster-webserver`
 and one for `dagster-daemon`. Both share the same `DAGSTER_HOME`.
 
 !!! note "Prerequisites"
-    - The conda environment is installed and contains `dagster`, `dagster-webserver`,
-        and `dagster-daemon`.
+    - The cloned conda environment at `C:\projects\arcpy-orchestration\env`
+        exists (see §2.1) and contains `dagster`, `dagster-webserver`, and
+        `dagster-daemon` (see §2.2).
     - You know the absolute path to the `dagster-webserver.exe` and
-        `dagster-daemon.exe` scripts in your conda environment's `Scripts\`
+        `dagster-daemon.exe` scripts in the cloned env's `Scripts\`
         directory (e.g.
         `C:\projects\arcpy-orchestration\env\Scripts\dagster-webserver.exe`).
     - `C:\projects\arcpy-orchestration\dagster_home\dagster.yaml` and

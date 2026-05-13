@@ -4,7 +4,7 @@ Park accessibility analysis.
 Reusable building blocks for a "parcels within walking distance of a public park"
 workflow. Each function does one thing, takes explicit inputs, and emits log
 messages at the appropriate level so that progress is visible in any consumer
-(scripts, ArcGIS Pro toolboxes, or Plombery tasks).
+(scripts, ArcGIS Pro toolboxes, or Dagster ops).
 """
 
 from __future__ import annotations
