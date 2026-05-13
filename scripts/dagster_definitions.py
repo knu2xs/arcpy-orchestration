@@ -6,13 +6,12 @@ the reusable functions in :mod:`arcpy_orchestration.park_access` into Dagster
 assets, assembles them into a job via asset selection, and attaches a daily
 schedule.
 """
-from __future__ import annotations
-
 import importlib.util
 import sys
 from pathlib import Path
 
 import dagster as dg
+from dagster import AssetExecutionContext
 
 # ---------------------------------------------------------------------------
 # Bootstrap: ensure arcpy_orchestration is importable when this file is loaded
@@ -70,7 +69,7 @@ PARCELS_PROJECTED_FC: str = f"{_INTERIM_GDB}/parcels_projected"
     },
     group_name="park_access",
 )
-def project_inputs(context) -> tuple[str, str]:
+def project_inputs(context: AssetExecutionContext) -> tuple[str, str]:
     """Project parks and parcels into the working CRS.
 
     Returns:
@@ -97,7 +96,7 @@ def project_inputs(context) -> tuple[str, str]:
     description="Parcels that fall within walking distance of a public park.",
 )
 def parcels_near_parks(
-    context,
+    context: AssetExecutionContext,
     parks_projected: str,
     parcels_projected: str,
 ) -> str:
@@ -128,7 +127,7 @@ def parcels_near_parks(
     description="Summary statistics (count, total value, mean value) for parcels near parks.",
 )
 def parcel_summary(
-    context,
+    context: AssetExecutionContext,
     parcels_near_parks: str,
 ):
     """Compute an overall summary of the selected parcels.
@@ -154,7 +153,7 @@ def parcel_summary(
     description="Excel workbook summarising parcels near parks.",
 )
 def summary_excel(
-    context,
+    context: AssetExecutionContext,
     parcel_summary,
 ) -> str:
     """Write the parcel summary to an Excel workbook.
