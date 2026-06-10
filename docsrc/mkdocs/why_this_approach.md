@@ -1,14 +1,15 @@
 # Why Not ArcGIS Notebooks?
 
 ArcGIS Notebook Server is an excellent platform for exploratory analysis,
-sharing analytical narratives, and lightweight scheduled work. It is **not**
-always the right host for production scheduled geoprocessing. This document
-explains the trade-offs and why this project hosts scheduled ArcPy work in
-ArcGIS Pro's Python environment behind a Dagster web UI instead.
+sharing analytical narratives, and lightweight scheduled work. It is **not**,
+however, always the right host for production scheduled geoprocessing. This
+document explains the trade-offs and the reasons this project runs scheduled
+ArcPy work in ArcGIS Pro's Python environment behind a Prefect orchestration
+UI instead.
 
 ## Quick comparison
 
-| Concern | ArcGIS Notebook Server | This project (ArcGIS Pro + Dagster + Servy) |
+| Concern | ArcGIS Notebook Server | This project (ArcGIS Pro + Prefect + Servy) |
 |---|---|---|
 | Python runtime | Curated Notebook runtime image (`standard` / `advanced`) | Full ArcGIS Pro conda env (any package the Pro env supports) |
 | ArcPy surface | Notebook runtime — subset of toolboxes and extensions | Full Pro install — every licensed extension and toolbox |
@@ -25,29 +26,27 @@ ArcGIS Pro's Python environment behind a Dagster web UI instead.
 The remainder of this page expands on the rows that drive the architectural
 decision most strongly.
 
----
-
 ## 1. Identity and resource access
 
 This is usually the decisive factor.
 
 ArcGIS Notebook Server runs each notebook inside a container started by the
-**Notebook Server site account**. When the notebook touches anything outside
+**Notebook Server site account**. When a notebook touches anything outside
 the container — a file share, a SQL Server, an internal HTTPS endpoint —
-the identity it presents is either:
+the identity it presents is one of the following:
 
 - the site service account (typically a single account shared by every
-    notebook), or
+    notebook),
 - a stored credential the analyst pasted into a cell, or
-- an ArcGIS Online / Enterprise token (which is only meaningful to other Esri
-    services, not to file servers or databases).
+- an ArcGIS Online / Enterprise token, which is only meaningful to other
+    Esri services, not to file servers or databases.
 
 In this project the orchestrator runs as a normal Windows process under
 **Servy**, which can launch it under **any Windows account you choose**,
 including:
 
 - `NT AUTHORITY\NetworkService` for least privilege on a single host.
-- A **domain service account** (`DOMAIN\svc-arcpy-orchestration`) that is a
+- A **domain service account** (eg `DOMAIN\svc-arcpy-orchestration`) that is a
     member of the same security groups your analysts use today.
 
 A domain service account is the practical multiplier. With one account:
@@ -70,10 +69,9 @@ A domain service account is the practical multiplier. With one account:
     cleanly across a Docker boundary.
 
 In an audit-heavy environment, "the orchestrator account did it" is also a
-much easier story than "the notebook container did it, but actually the
-shared site account did it, but actually a cell-level credential did it."
-
----
+far easier story to tell than "the notebook container did it — but actually
+the shared site account did it, but actually a cell-level credential did
+it."
 
 ## 2. Hardware access
 
@@ -81,17 +79,17 @@ ArcGIS Notebook Server containers are sized by the Notebook Server admin and
 **do not have unrestricted access to the host's hardware**:
 
 - CPU and RAM are bound by the container's resource limits. Larger pipelines
-    that need 32 GB of RAM or 16 cores have to be re-architected, not just
+    that need 32 GB of RAM or 16 cores must be re-architected, not just
     re-scheduled.
-- **GPU acceleration is not available** in the standard Notebook runtimes.
-    Tools like Deep Learning Studio, Detect Objects Using Deep Learning, or
-    raster analytics that benefit from CUDA fall back to CPU at best.
-- Local SSDs and scratch volumes the host machine has are not exposed.
-- Network adapters, including any private/management NICs, are abstracted
+- **GPU acceleration is not available** in the standard Notebook runtimes,
+    so tools like Deep Learning Studio, Detect Objects Using Deep Learning,
+    or raster analytics that benefit from CUDA fall back to CPU at best.
+- Local SSDs and scratch volumes on the host machine are not exposed.
+- Network adapters, including any private or management NICs, are abstracted
     behind container networking.
 
 When the orchestrator runs as a plain process inside ArcGIS Pro's Python
-environment:
+environment, the picture is very different:
 
 - It uses **all** the CPU cores and **all** the RAM the host has.
 - It has direct access to **the GPU**, which is significant for raster and
@@ -105,46 +103,42 @@ environment:
 Put another way: the orchestrator gets the **same** hardware envelope an
 analyst gets when they open ArcGIS Pro on that machine and click *Run*.
 
----
-
 ## 3. Software parity with the desktop
 
 Most ArcPy code is written and debugged inside ArcGIS Pro by an analyst.
-The Notebook Server runtime is *similar* to Pro's Python environment but is
-not identical:
+The Notebook Server runtime is *similar* to Pro's Python environment, but it
+is not identical:
 
 - It is a separate Docker image with its own update cadence.
-- It is a curated subset — some toolboxes (e.g. parts of Production
-    Mapping, Aviation, Defense, third-party extensions) are not present.
-- Custom conda packages have to be baked into a custom runtime image and
+- It is a curated subset — some toolboxes (for example, parts of Production
+    Mapping, Aviation, Defense, and third-party extensions) are not present.
+- Custom conda packages must be baked into a custom runtime image and
     re-baked on every Notebook Server upgrade.
 - Geoprocessing tools that depend on local desktop interactions (such as
-    those that surface a license check-out dialog) behave differently or not
-    at all.
+    those that surface a license check-out dialog) behave differently, or
+    not at all.
 
 Running on the Pro environment removes the parity question entirely:
 whatever the analyst can run interactively from Pro on this machine, the
-service can run on a schedule. Package additions are an
-`environment.yml` edit and a re-create — not a Docker image rebuild and a
-Notebook Server redeployment.
-
----
+service can run on a schedule. Adding packages is an `environment.yml` edit
+and a re-create — not a Docker image rebuild and a Notebook Server
+redeployment.
 
 ## 4. Code organization and review
 
-Notebooks are good for narrative analysis and presentation; they are
+Notebooks are good for narrative analysis and presentation, but they make
 **poor production artifacts**:
 
 - `.ipynb` files are JSON. They diff badly, merge worse, and routinely
-    accumulate execution-count and cell-output noise that pollute Git
+    accumulate execution-count and cell-output noise that pollutes Git
     history.
 - Cells encourage out-of-order state and "works on my machine" failures —
-    the failure mode where a notebook only runs cleanly because some
-    earlier cell was executed twice with different inputs.
+    the situation where a notebook only runs cleanly because some earlier
+    cell was executed twice with different inputs.
 - Cross-cutting concerns (logging, config, error handling) are duplicated
     cell-by-cell rather than imported from a shared module.
 
-This project structures code as a normal Python package
+This project instead structures code as a normal Python package
 (`src/arcpy_orchestration/`) with module-level loggers, a typed config
 loader, and reusable functions. Notebooks remain available under
 `notebooks/` for exploratory work, but the **scheduled** workflow lives in
@@ -157,20 +151,17 @@ plain `.py` modules. The result is:
 - One canonical implementation of cross-cutting concerns rather than N
     copies.
 
----
-
 ## 5. Operations, monitoring, and lifecycle
 
-The orchestration layer in this project (Dagster, plus Servy and IIS) is
+The orchestration layer in this project (Prefect, plus Servy and IIS) is
 purpose-built for the "scheduled background work" problem:
 
-- **[Dagster](dagster_setup_instructions.md)** — webserver + daemon split
-    with a rich model of jobs, ops, schedules, sensors, partitions, and
-    run observability. The UI exposes a per-job page, a *Materialize* /
-    *Launch run* button, parameterised manual runs, schedule editing, and
-    per-run logs streamed live to the browser. Failures are highlighted
-    and logs are persisted to disk for downstream ingestion.
-- **Servy** keeps the Dagster webserver and daemon processes alive
+- **[Prefect](setup.md)** — API server + worker architecture with a rich model
+    of flows, deployments, schedules, concurrency limits, retries, and run
+    observability. The UI exposes deployment pages, parameterized manual
+    runs, scheduling controls, and per-run state/log history for operational
+    troubleshooting.
+- **Servy** keeps Prefect services and worker processes alive
     across reboots and crashes, captures `stdout` / `stderr` with
     rotation, and lets you change the service account, recovery actions,
     and environment variables through a UI — without writing a Windows
@@ -182,38 +173,54 @@ purpose-built for the "scheduled background work" problem:
 ArcGIS Notebook Server *does* offer a scheduler, but it is intentionally
 simple: one schedule per notebook, no notion of per-task fan-out, no
 dependency-aware retries, and no live log stream outside the notebook UI
-itself. Comparable functionality on the Notebook Server side typically
-means layering an external orchestrator on top anyway.
-
----
+itself. Achieving comparable functionality on the Notebook Server side
+typically means layering an external orchestrator on top anyway.
 
 ## 6. Licensing
 
 The host machine needs **one ArcGIS Pro Single Use license** assigned to the
 service account (or otherwise authorized on the machine). That single license
 covers every pipeline the orchestrator runs, regardless of how many analysts
-trigger them through the web UI. Dagster, Servy, and IIS impose no
+trigger them through the web UI. Prefect, Servy, and IIS impose no
 additional licensing.
-
----
 
 ## When ArcGIS Notebooks is still the right answer
 
-To be balanced — this paradigm is the wrong choice when:
+The sections above make the case for this project's approach, but to keep
+things balanced, ArcGIS Notebooks remains the better choice in several
+common situations:
 
-- The audience is **analysts authoring shareable narratives**, not
+- The audience is **analysts authoring shareable narratives**, rather than
     operations engineers running scheduled jobs.
-- The workload **must run inside ArcGIS Enterprise's identity model**
-    (e.g. it acts on behalf of a named user and respects portal sharing
-    rules from inside Esri-managed code).
+- The workload **must run inside ArcGIS Enterprise's identity model** — for
+    example, it acts on behalf of a named user and respects portal sharing
+    rules from inside Esri-managed code.
 - You need **multi-tenant isolation** between many users running ad-hoc
-    work on the same machine — containers give you that for free,
-    whereas a single Pro environment does not.
-- You **do not have a Windows host** to run ArcGIS Pro on, and your
-    Esri footprint is Notebook Server in a Linux/Kubernetes
-    environment.
+    work on the same machine. Containers provide that for free, whereas a
+    single Pro environment does not.
+- You **do not have a Windows host** to run ArcGIS Pro on, and your Esri
+    footprint is Notebook Server in a Linux/Kubernetes environment.
 
-In those scenarios, keep using Notebooks. Where the requirement is
-"run an ArcPy pipeline on a schedule, on real hardware, against
-real file shares and databases, under a real account" — this project's
-paradigm is the simpler answer.
+In those scenarios, keep using Notebooks. But when the requirement is to
+run an ArcPy pipeline on a schedule, on real hardware, against real file
+shares and databases, and under a real account, this project's paradigm is
+the simpler answer.
+
+## Conclusion
+
+This paradigm is most desirable when the goal is reliable, repeatable,
+production-style ArcPy execution on a Windows host with strong operational
+control. If you need deterministic scheduling, service-account-based access
+to enterprise data sources, full ArcGIS Pro runtime parity, and clearer
+run-time observability, the ArcGIS Pro + Prefect + Servy model is the
+better fit.
+
+ArcGIS Notebooks, by contrast, fits best when the primary need is
+interactive, analyst-driven exploration and storytelling — especially in
+environments that prioritize notebook-native collaboration, ad-hoc
+experimentation, and containerized multi-tenant workflows.
+
+In practice, many teams use both: Notebooks for discovery and
+communication, and Prefect-managed scripts for durable scheduled
+operations.
+

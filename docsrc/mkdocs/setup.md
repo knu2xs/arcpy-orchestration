@@ -1,48 +1,53 @@
-# Dagster — Production Deployment Setup
+# Prefect — Production Deployment Setup
 
 This guide walks through standing up the project's ArcPy pipeline as a
-production Dagster deployment on a Windows server. The end result is a
+production Prefect deployment on a Windows server. The end result is a
 scheduled, monitored, self-restarting orchestrator accessible to users over
 HTTPS on the corporate network. The deployment stack is:
 
 1. **IIS** as a public-facing reverse proxy that handles HTTPS termination and
-    forwards requests to the local Dagster web UI.
-2. **Servy** as the Windows-service wrapper that keeps both Dagster processes
+    forwards requests to the local Prefect web UI.
+2. **Servy** as the Windows-service wrapper that keeps both Prefect processes
     running across reboots and crashes.
-3. **`dagster-webserver`** — the Dagster UI, exposed on `http://localhost:3000`.
-4. **`dagster-daemon`** — the background process that fires scheduled runs,
-    evaluates sensors, and manages run queuing.
+3. **`prefect server`** — the Prefect API and web UI, exposed on
+    `http://127.0.0.1:4200`.
+4. **The served flow process** (`scripts/make_data_prefect.py serve`) — the
+    long-running runner that registers the deployment, fires scheduled runs,
+    enforces the concurrency guard, and executes flow runs.
 
 !!! note "Two processes required"
-    Dagster splits its concerns across two long-running processes: the webserver
-    serves the UI and accepts manual launch requests, while the daemon is
-    responsible for evaluating schedules and sensors and queuing runs. Both must
-    be running for scheduled jobs to execute automatically.
+    Prefect splits its concerns across two long-running processes: the API
+    server backs the UI, stores run history, and accepts manual launch
+    requests, while the served flow runner is responsible for evaluating its
+    schedule, queuing runs, and executing them. Both must be running for
+    scheduled flows to execute automatically.
 
 ```mermaid
 flowchart LR
     browser([Browser])
     iis[IIS<br/>HTTPS :443<br/>reverse proxy]
-    webserver[dagster-webserver<br/>HTTP :3000]
-    daemon[dagster-daemon<br/>schedule / sensor engine]
+    server[prefect server<br/>API + UI<br/>HTTP :4200]
+    runner[served flow runner<br/>make_data_prefect.py serve]
     pipeline[ArcPy pipeline]
     storage[(SQLite<br/>run history)]
     servy[(Servy<br/>Windows services)]
 
     browser -->|HTTPS| iis
-    iis -->|HTTP forward| webserver
-    webserver --> pipeline
-    daemon --> pipeline
-    webserver <--> storage
-    daemon <--> storage
-    servy -. manages .-> webserver
-    servy -. manages .-> daemon
+    iis -->|HTTP forward| server
+    runner -->|register + poll| server
+    runner --> pipeline
+    server <--> storage
+    runner <--> storage
+    servy -. manages .-> server
+    servy -. manages .-> runner
 ```
 
 IIS is the public front door for the deployment: it terminates HTTPS at the
-server's hostname and forwards traffic to the Dagster web UI running locally
-on port 3000. Configuring it first means the reverse-proxy rule is in place
-and ready to route requests as soon as the Dagster services come online.
+server's hostname and forwards traffic to the Prefect web UI running locally
+on port 4200. Configuring it first means the reverse-proxy rule is in place
+and ready to route requests as soon as the Prefect services come online.
+
+## 1. Configure IIS as a Reverse Proxy
 
 ### 1.1 Enable Windows Features
 
@@ -72,7 +77,8 @@ Server** group in the **Actions** pane on the right.
 
 In IIS Manager:
 
-1. Select the machine name → **Server Certificates → Import** → select your `.pfx` file.
+1. Select the machine name → **Server Certificates → Import** → select your
+    `.pfx` file.
 2. **Sites → Default Web Site → Edit Bindings → Add**, choose type `https`, and
     select the certificate you just imported.
 
@@ -80,22 +86,23 @@ In IIS Manager:
     Domain certificates can be created and downloaded from the internal
     [Create SSL Server Certificates](https://certifactory.esri.com/certs/) site.
 
-### 1.4 Configure the Reverse Proxy to Dagster
+### 1.4 Configure the Reverse Proxy to Prefect
 
-Dagster's web UI listens on `http://localhost:3000` by default.
+Prefect's web UI and API listen on `http://127.0.0.1:4200` by default.
 
 1. Enable proxying at the server level: select the machine name →
-    **Application Request Routing Cache → Server Proxy Settings → Enable proxy → Apply**.
+    **Application Request Routing Cache → Server Proxy Settings → Enable proxy
+    → Apply**.
 
 2. At **Default Web Site → URL Rewrite → Add Rule(s) → Blank Rule**, set:
 
     | Field | Value |
     |---|---|
-    | Name | `Dagster Reverse Proxy` |
+    | Name | `Prefect Reverse Proxy` |
     | Match URL → Using | `Regular Expressions` |
     | Match URL → Pattern | `(.*)` |
     | Action type | `Rewrite` |
-    | Rewrite URL | `http://localhost:3000/{R:1}` |
+    | Rewrite URL | `http://localhost:4200/{R:1}` |
     | Append query string | checked |
 
     !!! warning "`The rule reference "1" is not valid`"
@@ -105,53 +112,56 @@ Dagster's web UI listens on `http://localhost:3000` by default.
         the capture group that `{R:1}` refers to.
 
 3. Apply, then browse to `https://<your-host>/` — you will get a `502` until
-    the Dagster service is running; that is expected.
+    the Prefect server service is running; that is expected.
 
-!!! note "Hosting Dagster under a sub-path (e.g. `https://<your-host>/dagster`)"
-    If the server also hosts other applications, you may want Dagster reachable
+!!! warning "Tell the UI where the API lives"
+    The Prefect UI is a browser application that calls the Prefect API
+    directly. When the UI is reached through the reverse proxy at
+    `https://<your-host>/`, the browser must be told the externally visible
+    API address, otherwise its API calls will target `127.0.0.1:4200` and
+    fail. Set `PREFECT_UI_API_URL` to the proxied API URL
+    (`https://<your-host>/api`) in the **server** service's environment
+    variables (§6.1).
+
+!!! note "Hosting Prefect under a sub-path (e.g. `https://<your-host>/prefect`)"
+    If the server also hosts other applications, you may want Prefect reachable
     at a sub-path rather than the site root. This requires two coordinated
-    changes — one in IIS and one in the Dagster webserver arguments — because
-    Dagster generates absolute URLs for its static assets based on a known
-    *path prefix*.
+    changes — one in IIS and one in the Prefect server settings — because the
+    UI builds absolute URLs for its API calls and static assets.
 
     **In IIS:** replace the single rewrite rule above with one scoped to the
     sub-path. The pattern strips the prefix before forwarding so the upstream
-    Dagster process still sees root-relative URLs:
+    Prefect process still sees root-relative URLs:
 
     | Field | Value |
     |---|---|
-    | Name | `Dagster Reverse Proxy` |
-    | Match URL → Pattern | `^dagster(?:/(.*))?$` |
+    | Name | `Prefect Reverse Proxy` |
+    | Match URL → Pattern | `^prefect(?:/(.*))?$` |
     | Action type | `Rewrite` |
-    | Rewrite URL | `http://localhost:3000/{R:1}` |
+    | Rewrite URL | `http://localhost:4200/{R:1}` |
     | Append query string | checked |
 
-    **In Dagster:** start `dagster-webserver` with the matching `--path-prefix`
-    flag (see §6.1) so it generates asset URLs under `/dagster`:
-
-    ```text
-    -w "...\workspace.yaml" -h 0.0.0.0 -p 3000 --path-prefix /dagster
-    ```
-
-    Without `--path-prefix`, the UI will load but its JavaScript and CSS
-    requests will 404 because they will be issued against the site root rather
-    than the sub-path.
+    **In Prefect:** set `PREFECT_UI_API_URL` to `https://<your-host>/prefect/api`
+    (see §6.1) so the UI issues its API calls under the matching sub-path.
+    Without it, the UI will load but its API and asset requests will 404
+    because they will be issued against the site root rather than the
+    sub-path.
 
 ---
 
-## 2. Install Dagster
+## 2. Install Prefect
 
-Dagster must be installed alongside `arcpy`, but installing it directly into
+Prefect must be installed alongside `arcpy`, but installing it directly into
 the stock ArcGIS Pro `arcgispro-py3` environment is not supported — that
 environment is managed by ArcGIS Pro and pip-installing into it can break
 future Pro upgrades. Instead, **clone** `arcgispro-py3` into the project tree
-and install Dagster into the clone.
+and install Prefect into the clone.
 
 !!! tip "Automated alternative"
-    The script [`scripts/setup_dagster.ps1`](../../scripts/setup_dagster.ps1)
-    performs §2.1 and §2.2 (and the rest of this guide) end-to-end from an
-    elevated PowerShell session. The manual steps below are equivalent and
-    are documented for transparency and partial reruns.
+    The script [`scripts/setup_prefect.ps1`](../../scripts/setup_prefect.ps1)
+    automates the runtime bootstrap and service start-up actions described in
+    this guide. The manual steps below are equivalent and are documented for
+    transparency and partial reruns.
 
 ### 2.1 Clone the `arcgispro-py3` environment
 
@@ -178,170 +188,121 @@ ensures the clone resolves the same channels and metadata Pro itself uses.
     several GB of disk space. The clone is a complete copy, not a hard-linked
     overlay.
 
-### 2.2 Install Dagster into the clone
+### 2.2 Install the project and Prefect into the clone
 
 Still in the Python Command Prompt at the project root, activate the cloned
-env and install Dagster with `pip`:
+env and install this project (which brings in Prefect via its dependencies)
+with an editable install:
 
 ```
 conda activate ./env
-pip install dagster dagster-webserver
+pip install -e .
 ```
 
 Verify the install:
 
 ```
-dagster --version
-dagster-webserver --version
-dagster-daemon --version
+prefect --version
+python -c "import prefect, aiosqlite; print(prefect.__version__)"
 ```
+
 ---
 
-## 3. Configure the Dagster Instance
+## 3. Configure the Prefect Runtime
 
-Dagster reads all instance-level configuration from a directory pointed to by
-the `DAGSTER_HOME` environment variable. Create that directory and populate it
-with two files.
+Prefect reads its runtime settings (home directory, metadata database, result
+storage, and API URL) from the `orchestration.prefect` block in
+[`config/config.yml`](../../config/config.yml). The project resolves these
+values, validates them, and exports them as `PREFECT_*` environment variables.
 
-### 3.1 Choose `DAGSTER_HOME`
+### 3.1 Runtime keys in `config.yml`
 
-A sensible location that keeps instance data inside the project tree:
+The relevant block under `environments.default` looks like this:
 
+```yaml
+orchestration:
+  prefect:
+    home_path: "prefect_home"
+    api_database_connection_url: "sqlite+aiosqlite:///prefect_home/prefect.db"
+    local_storage_path: "prefect_home/storage"
+    results_persist_by_default: true
+    api_url: "http://127.0.0.1:4200/api"
+    worker_type: "process"
+    work_pool_name: "local-process-pool"
 ```
-C:\projects\arcpy-orchestration\dagster_home\
-```
 
-Create the directory:
+All project-local paths must resolve inside the project root; the resolver
+rejects paths that escape it. These map onto the following `PREFECT_*`
+variables:
+
+- `PREFECT_HOME`
+- `PREFECT_API_DATABASE_CONNECTION_URL`
+- `PREFECT_LOCAL_STORAGE_PATH`
+- `PREFECT_RESULTS_PERSIST_BY_DEFAULT`
+- `PREFECT_API_URL`
+
+!!! warning "SQLite is fine here, but mind its limits"
+    This guide configures Prefect's metadata store using **SQLite**
+    (`sqlite+aiosqlite`). SQLite is well-suited to a single-server deployment
+    like this one, but it uses file-level locking, so it must live on local
+    disk — never on a network share or cloud-mounted drive — and very large
+    run histories will degrade read performance over time. For higher-volume
+    or multi-server deployments, point `api_database_connection_url` at a
+    PostgreSQL instance instead (see the
+    [Prefect settings reference](https://docs.prefect.io/v3/develop/settings-and-profiles)).
+
+### 3.2 Bootstrap the runtime configuration
+
+Run bootstrap first in every new shell used for orchestration commands. It
+resolves the config values, checks SQLite health, and exports the `PREFECT_*`
+variables into the current shell:
 
 ```powershell
-New-Item -ItemType Directory -Force "C:\projects\arcpy-orchestration\dagster_home"
+.\scripts\setup_prefect.ps1 -Action bootstrap
 ```
 
-### 3.2 `dagster.yaml` — Instance Configuration
+To display the effective resolved values without exporting anything else:
 
-`dagster.yaml` lives at the root of `DAGSTER_HOME` and configures the run
-storage, event log storage, and compute log storage backends. The default
-(SQLite) is fine for single-server deployments.
-
-```yaml
-# C:\projects\arcpy-orchestration\dagster_home\dagster.yaml
-
-storage:
-  sqlite:
-    base_dir: "C:\\projects\\arcpy-orchestration\\dagster_home\\storage"
-
-compute_logs:
-  local_directory:
-    base_dir: "C:\\projects\\arcpy-orchestration\\dagster_home\\compute_logs"
+```powershell
+.\scripts\show_prefect_runtime.ps1
 ```
 
-!!! warning "SQLite is not recommended for production"
-
-    These instructions configure Dagster's run storage, event log, and compute
-    log backends using **SQLite** (the default). SQLite is fine for a single
-    developer evaluating the stack, but Dagster explicitly
-    [recommends PostgreSQL for production deployments](https://docs.dagster.io/guides/deploy/dagster-instance#postgresql--mysql-recommended-for-production)
-    for several reasons:
-
-    - SQLite uses file-level locking, so concurrent writes from
-      `dagster-webserver` and `dagster-daemon` can produce lock contention
-      under load.
-    - Large run histories degrade SQLite read performance over time.
-    - SQLite files are not safe to place on a network share or cloud-mounted
-      drive, which limits backup strategies.
-    - PostgreSQL supports Dagster's
-      [run concurrency limits](https://docs.dagster.io/guides/operate/managing-concurrency)
-      and [auto-materialisation](https://docs.dagster.io/guides/build/assets/auto-materialize)
-      features more reliably.
-
-    To switch to PostgreSQL, replace the `storage:` block in
-    `dagster_home/dagster.yaml` (§3.2) with:
-
-    ```yaml
-    storage:
-      postgres:
-        postgres_db:
-          username: dagster
-          password:
-            env: DAGSTER_PG_PASSWORD
-          hostname: localhost
-          db_name: dagster
-          port: 5432
-    ```
-
-    Store the password in an environment variable (`DAGSTER_PG_PASSWORD`) added
-    to both Servy service configs (§6.1 and §6.2 **Advanced → Environment
-    Variables**) rather than in the YAML file. See the
-    [Dagster instance configuration reference](https://docs.dagster.io/guides/deploy/dagster-instance)
-    for the full set of options and the
-    [`dagster-postgres` package](https://docs.dagster.io/api/python-api/libraries/dagster-postgres)
-    for the required additional dependency (`pip install dagster-postgres`).
-
-### 3.3 `workspace.yaml` — Code Location
-
-`workspace.yaml` tells both `dagster-webserver` and `dagster-daemon` where to
-find the job definitions. Use `relative_path` so the configuration stays
-portable across machines and checkout locations — Dagster resolves it relative
-to the directory containing `workspace.yaml` itself, not to the current working
-directory or `DAGSTER_HOME`.
-
-```yaml
-# C:\projects\arcpy-orchestration\dagster_home\workspace.yaml
-
-load_from:
-  - python_file:
-      relative_path: "../scripts/dagster_definitions.py"
-      attribute: defs
-```
-
-`attribute: defs` names the `Definitions` object that the file exposes (see
-§4 below).
-
-!!! tip "When to prefer `absolute_path`"
-    Use `absolute_path` if `DAGSTER_HOME` lives outside the project tree (for
-    example, on a shared drive or under `%ProgramData%`). `relative_path` only
-    works when the relative layout between `workspace.yaml` and the
-    definitions file is stable across deployments.
+In the production deployment, these same variables are set on each Servy
+service rather than exported by hand (see §6).
 
 ---
 
-## 4. Understand the Dagster Definitions
+## 4. Understand the Prefect Flow Definition
 
-The pipeline's Dagster wiring lives in
-[`scripts/dagster_definitions.py`](../../scripts/dagster_definitions.py).
-This single file is the entry point referenced by
-`dagster_home/workspace.yaml` (see §3.3) and is loaded by both
-`dagster-webserver` and `dagster-daemon` at startup. For a typical deployment
-of *this* project no edits are required — the rest of this section explains
-the patterns the file uses so you can apply the same structure when adapting
-the project, or porting these conventions to a pipeline of your own.
+The pipeline's Prefect wiring lives in
+[`scripts/make_data_prefect.py`](../../scripts/make_data_prefect.py). This
+single file is the entry point referenced by the served flow process (see §6.2)
+and is also importable for one-shot runs. For a typical deployment of *this*
+project no edits are required — the rest of this section explains the patterns
+the file uses so you can apply the same structure when adapting the project, or
+porting these conventions to a pipeline of your own.
 
-!!! note "Assets, not ops"
-    This file uses Dagster's **software-defined asset** model (`@asset`,
-    `@multi_asset`) rather than the older `@op` / `@job` model. Dagster
-    [explicitly recommends assets](https://docs.dagster.io/guides/build/assets)
-    for new pipelines because they add an asset catalog, per-output
-    materialization history, and staleness tracking that ops lack. The
-    underlying compute is identical — `@asset` compiles to an op internally.
+!!! note "Flows and tasks"
+    This file uses Prefect's **`@flow`** and **`@task`** decorators. Each task
+    is an individually tracked unit of work; the flow composes them and Prefect
+    records per-task state, timing, and logs in the UI. The underlying compute
+    is ordinary Python — the decorators add orchestration, not new logic.
 
 ### 4.1 What the file is responsible for
 
-A Dagster definitions module has four jobs:
+The definitions module has four jobs:
 
-1. **Make the project package importable** when Dagster loads the file from a
-    working directory of its own choosing (it does not respect a
-    `pip install -e .` happening in some other shell).
-2. **Declare each pipeline output as a named asset** — an object in persistent
-    storage that Dagster can track, visualize, and check for staleness.
-3. **Build a job from an asset selection** so the scheduler can materialize the
-    whole group in dependency order.
-4. **Expose a top-level `Definitions` object** named exactly the value listed
-    under `attribute:` in `workspace.yaml` (here, `defs`).
+1. **Make the project package importable** when Prefect loads the file from a
+    working directory of its own choosing (it does not rely on a
+    `pip install -e .` having happened in some other shell).
+2. **Wrap each pipeline step as a `@task`** so Prefect can track, retry, and
+    visualize it.
+3. **Compose the tasks into a single `@flow`** that runs them in dependency
+    order.
+4. **Serve the flow** with a managed concurrency guard so it can be scheduled
+    and triggered from the UI.
 
 ### 4.2 Key patterns and why they matter
-
-The numbered points below map directly onto sections of
-[`scripts/dagster_definitions.py`](../../scripts/dagster_definitions.py).
 
 #### Bootstrap so `arcpy_orchestration` is importable
 
@@ -357,25 +318,16 @@ if importlib.util.find_spec("arcpy_orchestration") is None:
 
 In a properly provisioned conda env (§2.2) the editable install puts
 `arcpy_orchestration` on `sys.path` and the `if` branch is a no-op. The
-fallback exists so that a developer who runs `dagster dev -f
-scripts/dagster_definitions.py` *before* `pip install -e .` still gets a
-working module rather than a confusing `ModuleNotFoundError`.
+fallback exists so that a developer who runs the file *before*
+`pip install -e .` still gets a working module rather than a confusing
+`ModuleNotFoundError`.
 
 !!! tip "Apply this pattern to your own definitions"
     Always derive `DIR_PRJ` from `Path(__file__)`, not from the current
-    working directory. Dagster sets its own CWD, and relative paths derived
-    from `os.getcwd()` will silently break in production.
+    working directory. The served process sets its own CWD, and relative paths
+    derived from `os.getcwd()` will silently break in production.
 
-#### Import the package once, get logging for free
-
-```python
-import arcpy_orchestration  # noqa: F401, E402
-```
-
-This ensures every module-level logger configured by the package is
-initialised before any asset runs. See §4.3 for details.
-
-#### Resolve config values at module scope, not inside assets
+#### Resolve config values at module scope, not inside tasks
 
 ```python
 WORKING_WKID: int = config.spatial.working_wkid
@@ -384,130 +336,75 @@ PARKS_FC: str = str(DIR_PRJ / config.park_access.parks_fc)
 ```
 
 Reading [`config/config.yml`](../../config/config.yml) once at import time
-keeps asset functions focused on orchestration. It also surfaces config errors
-at load time — `dagster-webserver` will refuse to start with a clear traceback
+keeps task functions focused on orchestration. It also surfaces config errors
+at load time — the served process will refuse to start with a clear traceback
 rather than silently failing on the first scheduled run. Never hardcode WKIDs,
-distances, or paths inside an asset body.
+distances, or paths inside a task body.
 
-#### One asset per logical output, using `@multi_asset` for multiple outputs
+#### One task per logical step, wired by return values
 
-Each asset is a named, trackable object in the Dagster asset catalog. Where
-one function produces two outputs (the two projected feature classes), use
-`@multi_asset` with an `outs` dictionary:
+Each step of the pipeline is its own `@task`, and downstream tasks receive
+upstream results as arguments so Prefect infers the dependency order:
 
 ```python
-@dg.multi_asset(
-    outs={
-        "parks_projected": dg.AssetOut(dagster_type=str, description="..."),
-        "parcels_projected": dg.AssetOut(dagster_type=str, description="..."),
-    },
-    group_name="park_access",
-)
-def project_inputs(context: dg.AssetExecutionContext) -> tuple[str, str]:
+@task
+def project_inputs_task() -> tuple[str, str]:
     ...
     return parks, parcels
-```
 
-Downstream assets declare their dependencies simply by using the upstream
-asset name as a function argument — Dagster infers the dependency from the
-parameter name:
 
-```python
-@dg.asset(group_name="park_access")
-def parcels_near_parks(
-    context: dg.AssetExecutionContext,
-    parks_projected: str,      # ← Dagster passes the return value of project_inputs[0]
-    parcels_projected: str,    # ← Dagster passes the return value of project_inputs[1]
-) -> str:
+@task
+def parcels_near_parks_task(parks_projected: str, parcels_projected: str) -> str:
     ...
 ```
 
-!!! note "Assets should be thin"
-    Resist the urge to put real work directly inside an `@asset`. Keeping the
+!!! note "Tasks should be thin"
+    Resist the urge to put real work directly inside a `@task`. Keeping the
     business logic in `arcpy_orchestration.park_access` means it stays
-    unit-testable without Dagster, and the same code can be reused from a
+    unit-testable without Prefect, and the same code can be reused from a
     notebook, a Python toolbox, or a different orchestrator.
 
-#### Use `context.log` for asset-level milestones
+#### Compose the flow and enable result persistence
 
 ```python
-context.log.info("Wrote selected parcels to %s", result)
+@flow(name="park-access-flow", persist_result=True, log_prints=True)
+def park_access_flow() -> str:
+    parks_projected, parcels_projected = project_inputs_task()
+    nearby_parcels = parcels_near_parks_task(parks_projected, parcels_projected)
+    parcel_summary = summarize_parcels_task(nearby_parcels)
+    return export_summary_task(parcel_summary)
 ```
 
-`context.log` tags the message with the run ID, step key, and asset name.
-Use it for the high-level milestones a future operator will scan. Detailed
-diagnostics from inside `arcpy_orchestration` flow through root-logger
-capture (§4.3) and appear in the same place without extra plumbing.
+`persist_result=True` stores the flow's return value and `log_prints=True`
+routes `print` output into the Prefect logs, so operator-facing milestones and
+diagnostics land in the same place.
 
-#### Build a job from an asset group selection
-
-Rather than hand-wiring a `@job` body, use `define_asset_job` with an
-`AssetSelection`:
+#### Serve the flow with a single-run concurrency guard
 
 ```python
-park_access_job = dg.define_asset_job(
-    name="park_access_job",
-    selection=dg.AssetSelection.groups("park_access"),
-    description="...",
-)
+FLOW_CONCURRENCY_LIMIT = 1
+FLOW_COLLISION_STRATEGY = "ENQUEUE"
 ```
 
-Dagster resolves the execution order from the asset dependency graph
-automatically. Adding or removing assets from the `"park_access"` group
-updates the job without touching the job definition.
-
-#### Schedule the job and set `execution_timezone` explicitly
-
-```python
-park_access_daily = dg.ScheduleDefinition(
-    job=park_access_job,
-    cron_schedule="0 0 * * *",
-    name="park_access_daily",
-    execution_timezone="America/Los_Angeles",
-)
-```
-
-Without `execution_timezone` Dagster uses UTC, which is rarely what an
-analyst expects when they look at a daily-midnight cron.
-
-#### Expose a single `Definitions` object
-
-```python
-defs = dg.Definitions(
-    assets=[project_inputs, parcels_near_parks, parcel_summary, summary_excel],
-    jobs=[park_access_job],
-    schedules=[park_access_daily],
-)
-```
-
-This is the object `workspace.yaml`'s `attribute: defs` resolves to. Dagster
-will only see entities listed here. Assets must be explicitly enumerated;
-`define_asset_job` does not automatically pull them in.
+ArcPy is not safe to run concurrently against the same workspace, so the served
+deployment caps the flow to one in-flight run and **enqueues** overlapping
+triggers rather than running them in parallel.
 
 ### 4.3 Logging integration
 
-Dagster's executor installs a handler on the Python root logger for the
-duration of each asset execution. Because `arcpy_orchestration` module loggers
-propagate to the root by default, **no custom handler is required** — log
-records from `arcpy_orchestration` appear automatically in the Dagster UI
-run timeline and compute logs.
-
-The `context.log` calls in the assets add asset-level context (step key,
-run ID) to messages you emit directly. Use `context.log` for asset-level
-milestones and trust the module loggers for detailed diagnostic output.
-
-!!! note
-    Dagster attaches its log capture to the standard Python root logger, which
-    means any module that propagates records up the standard hierarchy (the
-    default for all `arcpy_orchestration` module loggers) will have its output
-    captured automatically — no custom handler or configuration is required.
+Because every `arcpy_orchestration` module logger propagates to the Python root
+logger, and the flow is decorated with `log_prints=True`, log records and
+`print` output from the pipeline appear automatically in the Prefect UI run
+logs — no custom handler is required. Use the package's module loggers for
+detailed diagnostics; they flow through to the same place.
 
 ---
 
 ## 5. Install Servy
 
 Servy wraps any executable as a native Windows service. It provides automatic
-restart on failure, log rotation, and a simple UI for editing the configuration.
+restart on failure, log rotation, and a simple UI for editing the
+configuration.
 
 1. Download the **.NET 10+ self-contained installer** from
     [servy-win.github.io](https://servy-win.github.io/).
@@ -515,62 +412,57 @@ restart on failure, log rotation, and a simple UI for editing the configuration.
 
 ---
 
-## 6. Configure the Dagster Services in Servy
+## 6. Configure the Prefect Services in Servy
 
-Dagster requires **two separate Servy services** — one for `dagster-webserver`
-and one for `dagster-daemon`. Both share the same `DAGSTER_HOME`.
+Prefect requires **two separate Servy services** — one for the API server and
+one for the served flow process. Both share the same `PREFECT_*` environment
+configuration.
 
 !!! note "Prerequisites"
     - The cloned conda environment at `C:\projects\arcpy-orchestration\env`
-        exists (see §2.1) and contains `dagster`, `dagster-webserver`, and
-        `dagster-daemon` (see §2.2).
-    - You know the absolute path to the `dagster-webserver.exe` and
-        `dagster-daemon.exe` scripts in the cloned env's `Scripts\`
-        directory (e.g.
-        `C:\projects\arcpy-orchestration\env\Scripts\dagster-webserver.exe`).
-    - `C:\projects\arcpy-orchestration\dagster_home\dagster.yaml` and
-        `workspace.yaml` exist (see §3).
+        exists (see §2.1) and contains `prefect` and this project (see §2.2).
+    - You know the absolute path to `prefect.exe` in the cloned env's
+        `Scripts\` directory (e.g.
+        `C:\projects\arcpy-orchestration\env\Scripts\prefect.exe`) and to
+        `python.exe` at the env root (e.g.
+        `C:\projects\arcpy-orchestration\env\python.exe`).
+    - The `orchestration.prefect` block in `config/config.yml` is populated
+        (see §3.1).
+
+!!! note "Why not a separate worker service?"
+    This project serves the flow with `flow.serve()`, which runs its own
+    in-process runner that polls for and executes scheduled runs. That removes
+    the need for a separate `prefect worker` / work-pool service. The
+    `start-worker` action in `setup_prefect.ps1` exists for the alternative
+    work-pool deployment model and is not required for the two-service setup
+    documented here.
 
 Launch **Servy Desktop** as Administrator, click **New** for each service, and
 fill in each tab as follows.
 
-### 6.1 Service 1 — `dagster-webserver` (the UI)
+### 6.1 Service 1 — `prefect server` (the API and UI)
 
 #### Main
 
 | Field | Value |
 |---|---|
-| Service Name | `DagsterWebserver` |
-| Display Name | `Dagster Webserver` |
-| Description | `Dagster web UI for the ArcPy orchestration project.` |
-| Executable Path | full path to `dagster-webserver.exe` in the conda env `Scripts\` directory |
-| Arguments | `-w "C:\projects\arcpy-orchestration\dagster_home\workspace.yaml" -h 0.0.0.0 -p 3000` |
+| Service Name | `PrefectServer` |
+| Display Name | `Prefect Server` |
+| Description | `Prefect API and web UI for the ArcPy orchestration project.` |
+| Executable Path | full path to `prefect.exe` in the conda env `Scripts\` directory |
+| Arguments | `server start --host 127.0.0.1 --port 4200` |
 | Startup Directory | `C:\projects\arcpy-orchestration` |
 | Startup Type | `Automatic` |
 | Enable Console UI | **off** |
-
-!!! note "Hosting under a sub-path"
-    If you configured IIS to expose Dagster at a sub-path such as
-    `https://<your-host>/dagster` (see the note in §1.4), the **Arguments**
-    field must include the matching `--path-prefix` flag so the webserver
-    generates correct static-asset URLs:
-
-    ```text
-    -w "C:\projects\arcpy-orchestration\dagster_home\workspace.yaml" -h 0.0.0.0 -p 3000 --path-prefix /dagster
-    ```
-
-    The value passed here must match exactly the prefix stripped by the IIS
-    rewrite rule. Restart the `DagsterWebserver` service via Servy Manager
-    after changing this argument.
 
 #### Logging
 
 | Field | Value |
 |---|---|
 | Enable stdout logging | on |
-| stdout log path | `C:\projects\arcpy-orchestration\reports\logs\dagster_webserver_stdout.log` |
+| stdout log path | `C:\projects\arcpy-orchestration\reports\logs\prefect_server_stdout.log` |
 | Enable stderr logging | on |
-| stderr log path | `C:\projects\arcpy-orchestration\reports\logs\dagster_webserver_stderr.log` |
+| stderr log path | `C:\projects\arcpy-orchestration\reports\logs\prefect_server_stderr.log` |
 | Rotation | date-based, daily |
 | Max files to retain | `14` |
 
@@ -592,30 +484,37 @@ fill in each tab as follows.
 
 #### Advanced — Environment Variables
 
-Both Dagster processes read their instance configuration from `DAGSTER_HOME`.
-Add two variables:
+Both Prefect processes read their runtime configuration from these `PREFECT_*`
+variables. Set them identically on both services (values resolve from
+`config/config.yml`; see §3.1):
 
 | Name | Value | Description |
 |---|---|---|
-| `DAGSTER_HOME` | `C:\projects\arcpy-orchestration\dagster_home` | Tells both Dagster processes where to find `dagster.yaml` and `workspace.yaml` and where to write run storage and compute logs. Must be identical in both service configs. |
-| `PROJECT_ENV` | `prod` | Sets the active configuration environment loaded by `arcpy_orchestration`; `prod` activates the `environments.prod` settings block in `config/config.yml`. |
+| `PREFECT_HOME` | `C:\projects\arcpy-orchestration\prefect_home` | Prefect instance home directory. Must be identical in both service configs. |
+| `PREFECT_API_DATABASE_CONNECTION_URL` | `sqlite+aiosqlite:///C:/projects/arcpy-orchestration/prefect_home/prefect.db` | Project-local SQLite metadata database. Must be identical in both service configs. |
+| `PREFECT_LOCAL_STORAGE_PATH` | `C:\projects\arcpy-orchestration\prefect_home\storage` | Project-local result storage directory. |
+| `PREFECT_RESULTS_PERSIST_BY_DEFAULT` | `true` | Persist flow/task results by default. |
+| `PREFECT_API_URL` | `http://127.0.0.1:4200/api` | API endpoint the served runner connects to. |
+| `PREFECT_UI_API_URL` | `https://<your-host>/api` | Externally visible API URL the browser UI calls through the IIS reverse proxy (§1.4). **Server service only.** |
+| `PROJECT_ENV` | `prod` | Activates the `environments.prod` settings block in `config/config.yml`. |
 
 ---
 
-### 6.2 Service 2 — `dagster-daemon` (the scheduler)
+### 6.2 Service 2 — the served flow runner (the scheduler)
 
-The daemon evaluates schedules, sensors, and the run queue. Without it,
+The served flow process registers the `park-access` deployment, evaluates its
+schedule, enforces the concurrency guard, and executes runs. Without it,
 scheduled runs will never fire.
 
 #### Main
 
 | Field | Value |
 |---|---|
-| Service Name | `DagsterDaemon` |
-| Display Name | `Dagster Daemon` |
-| Description | `Dagster schedule and sensor daemon for the ArcPy orchestration project.` |
-| Executable Path | full path to `dagster-daemon.exe` in the conda env `Scripts\` directory |
-| Arguments | `run -w "C:\projects\arcpy-orchestration\dagster_home\workspace.yaml"` |
+| Service Name | `PrefectServeFlow` |
+| Display Name | `Prefect Serve Flow` |
+| Description | `Prefect served flow runner for the ArcPy orchestration project.` |
+| Executable Path | full path to `python.exe` at the conda env root |
+| Arguments | `scripts\make_data_prefect.py serve` |
 | Startup Directory | `C:\projects\arcpy-orchestration` |
 | Startup Type | `Automatic` |
 | Enable Console UI | **off** |
@@ -625,84 +524,250 @@ scheduled runs will never fire.
 | Field | Value |
 |---|---|
 | Enable stdout logging | on |
-| stdout log path | `C:\projects\arcpy-orchestration\reports\logs\dagster_daemon_stdout.log` |
+| stdout log path | `C:\projects\arcpy-orchestration\reports\logs\prefect_serve_stdout.log` |
 | Enable stderr logging | on |
-| stderr log path | `C:\projects\arcpy-orchestration\reports\logs\dagster_daemon_stderr.log` |
+| stderr log path | `C:\projects\arcpy-orchestration\reports\logs\prefect_serve_stderr.log` |
 | Rotation | date-based, daily |
 | Max files to retain | `14` |
 
 #### Recovery
 
-Same as the webserver service above.
+Same as the server service above.
 
 #### Log On
 
-Use the same account as the webserver service.
+Use the same account as the server service.
 
 #### Advanced — Environment Variables
 
-| Name | Value | Description |
-|---|---|---|
-| `DAGSTER_HOME` | `C:\projects\arcpy-orchestration\dagster_home` | Tells both Dagster processes where to find `dagster.yaml` and `workspace.yaml` and where to write run storage and compute logs. Must be identical in both service configs. |
-| `PROJECT_ENV` | `prod` | Sets the active configuration environment loaded by `arcpy_orchestration`; `prod` activates the `environments.prod` settings block in `config/config.yml`. |
+Set the same `PREFECT_*` and `PROJECT_ENV` variables as the server service
+(§6.1), **except** `PREFECT_UI_API_URL`, which is only needed by the server
+that hosts the browser UI.
 
 ---
 
 ### 6.3 Service Dependencies
 
-Open the **Dependencies** tab of `DagsterDaemon` and add `DagsterWebserver` as
-a dependency. This ensures the webserver (and its shared SQLite storage) is
-fully initialized before the daemon starts.
+Open the **Dependencies** tab of `PrefectServeFlow` and add `PrefectServer` as
+a dependency. This ensures the API server (and its shared SQLite storage) is
+fully initialized before the served flow process tries to register its
+deployment.
 
 ### 6.4 Install and Start
 
 1. In **Servy Desktop**, install each service by clicking **Install**.
-2. Open **Servy Manager**, start `DagsterWebserver` first.
-3. Watch the stdout log for:
-
-    ```text
-    Serving dagster-webserver on http://0.0.0.0:3000 in process ...
-    ```
-
-4. Start `DagsterDaemon` and confirm in its stdout log that it connected to the
-    instance storage and loaded the schedule.
-5. Browse to `https://<your-host>/`. The Dagster UI should load, show the
-    `park_access_job` under **Jobs**, and list `park_access_daily` under
-    **Schedules**.
+2. Open **Servy Manager**, start `PrefectServer` first.
+3. Watch the stdout log for a line indicating the server is serving on
+    `http://127.0.0.1:4200`.
+4. Start `PrefectServeFlow` and confirm in its stdout log that it resolved the
+    runtime settings and began serving the `park-access` deployment.
+5. Browse to `https://<your-host>/`. The Prefect UI should load and list the
+    `park-access-flow/park-access` deployment under **Deployments**.
 
 ---
 
-## 7. Enable the Schedule
+### 6.5 Scripted install (CLI / PowerShell alternative)
 
-Dagster schedules are created in a **paused** state and must be explicitly
-turned on after deployment.
+The GUI steps in §6.1–§6.4 can be reproduced headlessly with the
+[Servy CLI](https://github.com/aelassas/servy/wiki/Servy-CLI) or the
+[Servy PowerShell module](https://github.com/aelassas/servy/wiki/Servy-PowerShell-Module),
+which is convenient for repeatable deployments. Both wrap the same service
+engine as the desktop app.
 
-In the Dagster UI:
+!!! warning "Run elevated"
+    Installing Windows services modifies the Service Control Manager, so run
+    these commands from an **Administrator** PowerShell session.
 
-1. Navigate to **Schedules → `park_access_daily`**.
-2. Toggle the schedule to **Running**.
+!!! note "Forward slashes in environment values"
+    Servy's `--envVars` / `-EnvVars` parser treats `\`, `=`, `;`, and `"` as
+    special and requires escaping them (e.g. `\\` for a backslash). To keep the
+    snippets readable, the `PREFECT_*` path values below use forward slashes,
+    which Prefect and `pathlib` accept on Windows. Adjust
+    `D:/projects/arcpy-orchestration` and `<your-host>` to match your machine.
 
-Alternatively, from the command line (with `DAGSTER_HOME` set):
+#### Option A — `servy-cli`
 
 ```powershell
-$env:DAGSTER_HOME = "C:\projects\arcpy-orchestration\dagster_home"
-dagster schedule start park_access_daily
+# --- Service 1: Prefect API server + UI -----------------------------------
+servy-cli install `
+    --name="PrefectServer" `
+    --displayName="Prefect Server" `
+    --description="Prefect API and web UI for the ArcPy orchestration project." `
+    --path="D:\projects\arcpy-orchestration\env\Scripts\prefect.exe" `
+    --params="server start --host 127.0.0.1 --port 4200" `
+    --startupDir="D:\projects\arcpy-orchestration" `
+    --startupType="Automatic" `
+    --stdout="D:\projects\arcpy-orchestration\reports\logs\prefect_server_stdout.log" `
+    --stderr="D:\projects\arcpy-orchestration\reports\logs\prefect_server_stderr.log" `
+    --enableDateRotation `
+    --dateRotationType="Daily" `
+    --maxRotations=14 `
+    --recoveryAction="RestartService" `
+    --maxRestartAttempts=5 `
+    --envVars="PREFECT_HOME=D:/projects/arcpy-orchestration/prefect_home; PREFECT_API_DATABASE_CONNECTION_URL=sqlite+aiosqlite:///D:/projects/arcpy-orchestration/prefect_home/prefect.db; PREFECT_LOCAL_STORAGE_PATH=D:/projects/arcpy-orchestration/prefect_home/storage; PREFECT_RESULTS_PERSIST_BY_DEFAULT=true; PREFECT_API_URL=http://127.0.0.1:4200/api; PREFECT_UI_API_URL=https://<your-host>/api; PROJECT_ENV=prod"
+
+# --- Service 2: served flow runner (depends on the server) ----------------
+servy-cli install `
+    --name="PrefectServeFlow" `
+    --displayName="Prefect Serve Flow" `
+    --description="Prefect served flow runner for the ArcPy orchestration project." `
+    --path="D:\projects\arcpy-orchestration\env\python.exe" `
+    --params="scripts\make_data_prefect.py serve" `
+    --startupDir="D:\projects\arcpy-orchestration" `
+    --startupType="Automatic" `
+    --stdout="D:\projects\arcpy-orchestration\reports\logs\prefect_serve_stdout.log" `
+    --stderr="D:\projects\arcpy-orchestration\reports\logs\prefect_serve_stderr.log" `
+    --enableDateRotation `
+    --dateRotationType="Daily" `
+    --maxRotations=14 `
+    --recoveryAction="RestartService" `
+    --maxRestartAttempts=5 `
+    --deps="PrefectServer" `
+    --envVars="PREFECT_HOME=D:/projects/arcpy-orchestration/prefect_home; PREFECT_API_DATABASE_CONNECTION_URL=sqlite+aiosqlite:///D:/projects/arcpy-orchestration/prefect_home/prefect.db; PREFECT_LOCAL_STORAGE_PATH=D:/projects/arcpy-orchestration/prefect_home/storage; PREFECT_RESULTS_PERSIST_BY_DEFAULT=true; PREFECT_API_URL=http://127.0.0.1:4200/api; PROJECT_ENV=prod"
+
+# --- Start in dependency order --------------------------------------------
+servy-cli start --name="PrefectServer"
+servy-cli start --name="PrefectServeFlow"
 ```
+
+!!! tip "Run under a domain service account"
+    To run the services under a specific account rather than Local System, add
+    `--user=".\\svc-arcpy"` (or `DOMAIN\\svc-arcpy`) to each `install` command.
+    Pass the password via the `SERVY_PASSWORD` environment variable rather than
+    the `--password` flag so it does not appear in process listings, and grant
+    the account write access to `%ProgramData%\Servy`, the project root, and the
+    conda environment.
+
+#### Option B — Servy PowerShell module (parameter splatting)
+
+```powershell
+Import-Module "C:\Program Files\Servy\Servy.psm1" -Force
+
+# Shared environment values (forward slashes avoid escaping; see note above).
+$prefectEnv = @(
+    "PREFECT_HOME=D:/projects/arcpy-orchestration/prefect_home"
+    "PREFECT_API_DATABASE_CONNECTION_URL=sqlite+aiosqlite:///D:/projects/arcpy-orchestration/prefect_home/prefect.db"
+    "PREFECT_LOCAL_STORAGE_PATH=D:/projects/arcpy-orchestration/prefect_home/storage"
+    "PREFECT_RESULTS_PERSIST_BY_DEFAULT=true"
+    "PREFECT_API_URL=http://127.0.0.1:4200/api"
+    "PROJECT_ENV=prod"
+) -join ";"
+
+# Service 1: Prefect API server + UI (UI needs the externally visible API URL).
+$serverParams = @{
+    Name              = "PrefectServer"
+    DisplayName       = "Prefect Server"
+    Description       = "Prefect API and web UI for the ArcPy orchestration project."
+    Path              = "D:\projects\arcpy-orchestration\env\Scripts\prefect.exe"
+    Params            = "server start --host 127.0.0.1 --port 4200"
+    StartupDir        = "D:\projects\arcpy-orchestration"
+    StartupType       = "Automatic"
+    Stdout            = "D:\projects\arcpy-orchestration\reports\logs\prefect_server_stdout.log"
+    Stderr            = "D:\projects\arcpy-orchestration\reports\logs\prefect_server_stderr.log"
+    RecoveryAction    = "RestartService"
+    MaxRestartAttempts = 5
+    EnvVars           = "$prefectEnv;PREFECT_UI_API_URL=https://<your-host>/api"
+}
+Install-ServyService @serverParams
+
+# Service 2: served flow runner (depends on the server; no PREFECT_UI_API_URL).
+$serveParams = @{
+    Name              = "PrefectServeFlow"
+    DisplayName       = "Prefect Serve Flow"
+    Description       = "Prefect served flow runner for the ArcPy orchestration project."
+    Path              = "D:\projects\arcpy-orchestration\env\python.exe"
+    Params            = "scripts\make_data_prefect.py serve"
+    StartupDir        = "D:\projects\arcpy-orchestration"
+    StartupType       = "Automatic"
+    Stdout            = "D:\projects\arcpy-orchestration\reports\logs\prefect_serve_stdout.log"
+    Stderr            = "D:\projects\arcpy-orchestration\reports\logs\prefect_serve_stderr.log"
+    RecoveryAction    = "RestartService"
+    MaxRestartAttempts = 5
+    Deps              = "PrefectServer"
+    EnvVars           = $prefectEnv
+}
+Install-ServyService @serveParams
+
+# Start in dependency order.
+Start-ServyService -Name "PrefectServer"
+Start-ServyService -Name "PrefectServeFlow"
+```
+
+!!! note "Switch parameters when splatting"
+    With splatting, set switch flags such as date-based rotation to `$true` in
+    the hashtable (e.g. `EnableDateRotation = $true`); never pass `$true` to a
+    switch on an inline call. See the
+    [module troubleshooting notes](https://github.com/aelassas/servy/wiki/Servy-PowerShell-Module#troubleshooting).
+
+---
+
+## 7. Verify Scheduling and Queue Behavior
+
+The served deployment is capped at a single concurrent run. To confirm the
+queue behaves correctly, trigger two overlapping runs:
+
+```powershell
+.\scripts\verify_prefect_queue.ps1
+```
+
+Expected behavior: the second run waits in a queued state until the first run
+reaches a terminal state, rather than executing in parallel. Inspect both run
+states in the Prefect UI under the deployment's **Runs** view.
+
+To attach or adjust a schedule for the deployment, use the deployment page in
+the Prefect UI (**Deployments → `park-access-flow/park-access` → Schedules**),
+or configure it in the serve call. New schedules can be paused and resumed from
+the same page.
 
 ---
 
 ## 8. Smoke Test the Pipeline
 
-1. In the Dagster UI, open **Jobs → `park_access_job`**.
-2. Click **Materialize all** (or **Launch run**) to trigger a manual run.
-3. Open the run in the **Runs** view. The four assets (`project_inputs`,
-    `parcels_near_parks`, `parcel_summary`, `summary_excel`) should appear in the
-    asset graph. Click any asset to view its structured log output —
-    `arcpy_orchestration` log records appear here automatically via root-logger
-    propagation (see §4.3).
+You can validate the pipeline two ways.
+
+**Serverless one-shot run** — executes the flow once in-process using Prefect's
+ephemeral mode, with no server required:
+
+```powershell
+.\scripts\run_prefect_smoke.ps1
+```
+
+This runs [`scripts/make_data_prefect.py`](../../scripts/make_data_prefect.py)'s
+`park_access_flow` directly and prints the output path on success.
+
+**Through the deployment** — with both services running (§6.4):
+
+1. In the Prefect UI, open **Deployments → `park-access-flow/park-access`**.
+2. Click **Run → Quick run** to trigger a manual run.
+3. Open the run in the **Runs** view. The four tasks (`project_inputs_task`,
+    `parcels_near_parks_task`, `summarize_parcels_task`, `export_summary_task`)
+    should appear in the run graph. Click any task to view its structured log
+    output — `arcpy_orchestration` log records appear here automatically via
+    root-logger propagation (see §4.3).
 4. Confirm the output Excel workbook is written to the path defined by
     `park_access.output_summary_path` in
     [`config/config.yml`](../../config/config.yml).
+
+---
+
+## 9. Recovery Procedures
+
+### 9.1 SQLite lock/corruption recovery
+
+If bootstrap or startup fails due to a lock or corruption in the metadata DB:
+
+1. Stop all Prefect processes (`PrefectServer` and `PrefectServeFlow` in Servy
+    Manager).
+2. Identify the DB path from the runtime output
+    (`PREFECT_API_DATABASE_CONNECTION_URL`).
+3. Back up the DB file.
+4. For **lock** errors: restart the services after confirming no process still
+    holds the DB.
+5. For **corruption** errors: recreate the DB (move the corrupt file aside so a
+    clean file is created) and restart bootstrap.
+
+The `assert_sqlite_health` check run during bootstrap fails fast with an
+actionable message for both conditions.
 
 ---
 
@@ -710,10 +775,13 @@ dagster schedule start park_access_daily
 
 | Symptom | Likely cause |
 |---|---|
-| `dagster-webserver` service starts then immediately stops | `DAGSTER_HOME` not set, `dagster.yaml` missing, or a Python import error in `dagster_definitions.py`. Check `dagster_webserver_stderr.log`. |
-| `502 Bad Gateway` from IIS | `dagster-webserver` is not running or bound to a different port. Check Servy Manager and `dagster_webserver_stdout.log`. |
-| Scheduled runs never fire | `DagsterDaemon` is not running, or the schedule is still in paused state. Enable the schedule in the UI (§7). |
-| Ops execute but no `arcpy_orchestration` logs appear in the UI | Check that `import arcpy_orchestration` appears near the top of `dagster_definitions.py` (this ensures module loggers are initialised). Also confirm the module loggers are not setting `propagate = False`. |
-| `arcpy` import error on service start | The service account cannot find the ArcGIS Pro conda environment. Verify the `Executable Path` points to the correct `dagster-webserver.exe` inside the conda `Scripts\` directory. |
-| Runs complete in the UI but the Excel output is missing | The `assessed_value` field name in `config.park_access.value_field` does not match the actual parcels schema. Inspect the feature class and update `config/config.yml`. |
-| `StorageException` in daemon logs after webserver restart | Both services must point to the same `DAGSTER_HOME`. Confirm the environment variable is set identically in both Servy service configs. |
+| `PrefectServer` service starts then immediately stops | Missing or invalid `orchestration.prefect` config, a SQLite lock/corruption, or a port conflict on 4200. Check `prefect_server_stderr.log`. |
+| `502 Bad Gateway` from IIS | `prefect server` is not running or is bound to a different host/port. Check Servy Manager and `prefect_server_stdout.log`. |
+| UI loads but shows connection errors or no data | `PREFECT_UI_API_URL` is not set to the externally visible proxied API URL on the server service (§1.4 / §6.1). |
+| Scheduled runs never fire | `PrefectServeFlow` is not running, or the deployment schedule is paused. Check the service and the deployment's Schedules page (§7). |
+| Tasks execute but no `arcpy_orchestration` logs appear in the UI | Confirm the flow is decorated with `log_prints=True` and that module loggers are not setting `propagate = False`. |
+| `arcpy` import error on service start | The service account cannot find the ArcGIS Pro conda environment. Verify the **Executable Path** points to `prefect.exe` / `python.exe` inside the cloned env. |
+| Runs complete in the UI but the Excel output is missing | The `value_field` in `config.park_access.value_field` does not match the actual parcels schema. Inspect the feature class and update `config/config.yml`. |
+| Served runner cannot reach the API after a server restart | Both services must share the same `PREFECT_API_URL` and metadata DB. Confirm the environment variables are set identically in both Servy service configs. |
+
+Prefect is now the active orchestration platform for this project.
