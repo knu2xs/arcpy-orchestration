@@ -6,6 +6,7 @@ __copyright__ = "Copyright 2026 by Joel McCune (https://github.com/knu2xs)"
 
 # add specific imports below if you want to organize your code into modules
 from . import config
+from . import orchestration
 from . import utils
 
-__all__ = ["config", "utils"]
+__all__ = ["config", "orchestration", "utils"]

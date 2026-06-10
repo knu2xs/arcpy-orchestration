@@ -258,6 +258,27 @@ def load_secrets(
     return ConfigNode(_load_yaml(path))
 
 
+def get_prefect_config_node(config_node: ConfigNode | None = None) -> ConfigNode:
+    """Return the ``orchestration.prefect`` settings block.
+
+    Args:
+        config_node: Optional config object. Defaults to module singleton.
+
+    Returns:
+        ConfigNode: Prefect configuration subtree.
+
+    Raises:
+        ValueError: If the required subtree does not exist.
+    """
+    cfg = config_node or config
+    try:
+        return cfg.orchestration.prefect
+    except AttributeError as exc:
+        raise ValueError(
+            "Missing 'orchestration.prefect' settings in config.yml."
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Module-level singletons – parsed once on first import
 # ---------------------------------------------------------------------------
