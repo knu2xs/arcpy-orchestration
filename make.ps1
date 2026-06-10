@@ -30,7 +30,10 @@
 #>
 param(
     [Parameter(Position = 0)]
-    [string]$Target = "help"
+    [string]$Target = "help",
+
+    [Parameter(Position = 1)]
+    [string]$Action
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,9 +62,44 @@ $ArcGISProPython = Join-Path $ArcGISProDir "bin\Python\envs\arcgispro-py3"
 $Tasks = [ordered]@{
 
     data = @{
-        Desc   = "Run data preprocessing (scripts/make_data.py)"
+        Desc   = "Run the data pipeline once, serverless (scripts/make_data_prefect.py run)"
         Action = {
-            conda run -p $CondaDir python scripts/make_data.py
+            # Singleton, serverless run: execute the flow once in-process (no Prefect server/worker).
+            conda run -p $CondaDir python scripts/make_data_prefect.py run
+        }
+    }
+
+    prefect = @{
+        Desc   = "Serve Prefect orchestration (action: start-all|start-server|start-worker|serve-flow|show-config; default start-all)"
+        Action = {
+            $prefectAction = if ($Action) { $Action } else { "start-all" }
+            $setupScript = Join-Path $ProjectDir "scripts\setup_prefect.ps1"
+
+            if ($prefectAction -eq "start-all") {
+                # Full web-UI experience from one call: launch the server and worker in their own
+                # windows, then serve the managed flow in this window. The server hosts the Prefect
+                # UI (see its console output for the URL, typically http://127.0.0.1:4200).
+                Write-Host "Launching Prefect server (new window)..." -ForegroundColor Cyan
+                Start-Process -FilePath "powershell" -WorkingDirectory $ProjectDir -ArgumentList @(
+                    "-NoExit", "-ExecutionPolicy", "Bypass",
+                    "-File", $PSCommandPath, "prefect", "start-server"
+                )
+
+                Write-Host "Launching Prefect worker (new window)..." -ForegroundColor Cyan
+                Start-Process -FilePath "powershell" -WorkingDirectory $ProjectDir -ArgumentList @(
+                    "-NoExit", "-ExecutionPolicy", "Bypass",
+                    "-File", $PSCommandPath, "prefect", "start-worker"
+                )
+
+                Write-Host "Serving managed flow in this window. The Prefect UI is hosted by the" -ForegroundColor Cyan
+                Write-Host "server window (default http://127.0.0.1:4200). Press Ctrl+C to stop serving." -ForegroundColor Cyan
+                conda run -p $CondaDir powershell -ExecutionPolicy Bypass -File $setupScript -Action serve-flow
+            }
+            else {
+                # Single web-based orchestration action is delegated to the control script, which
+                # exports the resolved Prefect environment before launching the long-running process.
+                conda run -p $CondaDir powershell -ExecutionPolicy Bypass -File $setupScript -Action $prefectAction
+            }
         }
     }
 

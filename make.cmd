@@ -47,9 +47,26 @@ SET ARCGIS_PRO_PYTHON="%ARCGIS_PRO_DIR%\bin\Python\envs\arcgispro-py3"
 :: Jump to command
 GOTO %1
 
-:: Perform data preprocessing steps contained in the make_data.py script.
+:: Run the data pipeline once, serverless (no Prefect server/worker).
 :data
-    CALL conda run -p %CONDA_DIR% python scripts/make_data.py
+    CALL conda run -p %CONDA_DIR% python scripts/make_data_prefect.py run
+    GOTO end
+
+:: Serve Prefect orchestration. Second arg is the action:
+::   start-all | start-server | start-worker | serve-flow | show-config  (default: start-all)
+:prefect
+    SET PREFECT_ACTION=%2
+    IF "%PREFECT_ACTION%"=="" SET PREFECT_ACTION=start-all
+    IF "%PREFECT_ACTION%"=="start-all" GOTO prefect_all
+    CALL conda run -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action %PREFECT_ACTION%
+    GOTO end
+
+:: Full web-UI experience from one call: launch the server and worker in their own windows,
+:: then serve the managed flow in this window. The server hosts the Prefect UI.
+:prefect_all
+    START "Prefect Server" conda run -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action start-server
+    START "Prefect Worker" conda run -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action start-worker
+    CALL conda run -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action serve-flow
     GOTO end
 
 :: Delete all compiled Python files
