@@ -99,10 +99,6 @@ docs/
 # exclude cookiecutter post_gen log file
 post_gen_project.log
 
-# speckit
-.specify/
-specs/
-
 # additional local environment and temp files
 venv/
 .venv/
