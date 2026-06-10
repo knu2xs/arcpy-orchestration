@@ -28,6 +28,7 @@ license = {text = "Apache-2.0"}
 
 dependencies = [
     "openpyxl",
+    "prefect>=3.0",
 ]
 
 [project.optional-dependencies]

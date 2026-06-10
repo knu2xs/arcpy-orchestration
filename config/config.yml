@@ -45,6 +45,15 @@ environments:
       value_field: "TOTAL_VALUE"
       output_parcels_fc: "data/processed/processed.gdb/parcels_near_parks"
       output_summary_path: "data/processed/parcels_near_parks_summary.xlsx"
+    orchestration:
+      prefect:
+        home_path: "prefect_home"
+        api_database_connection_url: "sqlite+aiosqlite:///prefect_home/prefect.db"
+        local_storage_path: "prefect_home/storage"
+        results_persist_by_default: true
+        api_url: "http://127.0.0.1:4200/api"
+        worker_type: "process"
+        work_pool_name: "local-process-pool"
 
   dev:
     # inherits all defaults; override only what differs

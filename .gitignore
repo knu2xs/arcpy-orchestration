@@ -99,8 +99,16 @@ docs/
 # exclude cookiecutter post_gen log file
 post_gen_project.log
 
-# Dagster runtime state (only commit dagster.yml and workspace.yml)
-dagster_home/*
-!dagster_home/dagster.yml
-!dagster_home/workspace.yml
+# speckit
+.specify/
+specs/
 
+# additional local environment and temp files
+venv/
+.venv/
+Thumbs.db
+*.tmp
+*.swp
+
+# prefect home directory
+prefect_home/
