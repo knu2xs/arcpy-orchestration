@@ -51,6 +51,7 @@ CONFIG_DIR: Path = PROJECT_ROOT / "config"
 # Default file names
 _CONFIG_FILE: str = "config.yml"
 _SECRETS_FILE: str = "secrets.yml"
+_SECRETS_FILE_ALT: str = "secrets.yaml"
 
 # ---------------------------------------------------------------------------
 # Active environment — change this value or set the PROJECT_ENV env var
@@ -69,13 +70,37 @@ class ConfigNode:
     (``cfg["logging"]["level"]``) access for convenience.
     """
 
-    def __init__(self, data: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        data: dict[str, Any] | None = None,
+        node_path: str = "config",
+    ) -> None:
         data = data or {}
+        object.__setattr__(self, "_node_path", node_path)
         for key, value in data.items():
             if isinstance(value, dict):
-                value = ConfigNode(value)
+                value = ConfigNode(value, node_path=f"{node_path}.{key}")
             # store on the instance __dict__ so attribute access works
             object.__setattr__(self, key, value)
+
+    def __getattr__(self, key: str) -> Any:
+        available = sorted(
+            k for k in self.__dict__.keys() if not k.startswith("_")
+        )
+        available_text = ", ".join(available) if available else "(none)"
+
+        msg = (
+            f"Undefined configuration key '{self._node_path}.{key}'. "
+            f"Available keys at '{self._node_path}': {available_text}."
+        )
+
+        if self._node_path.startswith("secrets") and not available:
+            msg += (
+                " Secrets are currently empty. Ensure config/secrets.yml or "
+                "config/secrets.yaml exists and includes the expected keys."
+            )
+
+        raise AttributeError(msg)
 
     # dict-style access -------------------------------------------------------
     def __getitem__(self, key: str) -> Any:
@@ -254,8 +279,22 @@ def load_secrets(
         ``config/secrets_template.yml`` to ``config/secrets.yml`` and
         fill in your values.
     """
-    path = Path(secrets_path) if secrets_path else CONFIG_DIR / _SECRETS_FILE
-    return ConfigNode(_load_yaml(path))
+    if secrets_path:
+        path = Path(secrets_path)
+        return ConfigNode(_load_yaml(path), node_path="secrets")
+
+    primary = CONFIG_DIR / _SECRETS_FILE
+    alternate = CONFIG_DIR / _SECRETS_FILE_ALT
+
+    if primary.exists():
+        return ConfigNode(_load_yaml(primary), node_path="secrets")
+    if alternate.exists():
+        return ConfigNode(_load_yaml(alternate), node_path="secrets")
+
+    raise FileNotFoundError(
+        "Secrets file not found. Expected either "
+        f"'{primary}' or '{alternate}'."
+    )
 
 
 def get_prefect_config_node(config_node: ConfigNode | None = None) -> ConfigNode:
@@ -291,8 +330,9 @@ except FileNotFoundError:
     import warnings
 
     warnings.warn(
-        "config/secrets.yml not found. Copy config/secrets_template.yml "
-        "to config/secrets.yml and fill in your credentials.",
+        "Neither config/secrets.yml nor config/secrets.yaml was found. "
+        "Copy config/secrets_template.yml to config/secrets.yml and fill in "
+        "your credentials.",
         stacklevel=2,
     )
-    secrets = ConfigNode()
+    secrets = ConfigNode(node_path="secrets")
