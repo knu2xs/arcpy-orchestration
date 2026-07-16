@@ -38,13 +38,13 @@ environments:
       default_crs: "EPSG:4326"  # CRS to use when not specified by data source
       default_unit: "meters"    # Unit for distance calculations (e.g., "meters", "degrees")
       working_wkid: 5070        # NAD83 / Conus Albers — projected CRS for measurement
-    park_access:
-      walk_distance_m: 800              # ~10-minute walk
-      parks_fc: "data/raw/raw.gdb/parks"
+    flood_zone_summary:
+      flood_zones_fc: "data/raw/raw.gdb/flood_zones"
       parcels_fc: "data/raw/raw.gdb/parcels"
+      flood_zone_field: "FloodZoneType"
       value_field: "TOTAL_VALUE"
-      output_parcels_fc: "data/processed/processed.gdb/parcels_near_parks"
-      output_summary_path: "data/processed/parcels_near_parks_summary.xlsx"
+      output_parcels_fc: "data/processed/processed.gdb/parcels_affected_by_flood"
+      output_summary_path: "data/processed/flood_impact_report.xlsx"
     orchestration:
       prefect:
         home_path: "prefect_home"
@@ -54,6 +54,9 @@ environments:
         api_url: "http://127.0.0.1:4200/api"
         worker_type: "process"
         work_pool_name: "local-process-pool"
+        logging_to_api_enabled: true
+        logging_level: "INFO"
+        logging_extra_loggers: "arcpy_orchestration"
 
   dev:
     # inherits all defaults; override only what differs
