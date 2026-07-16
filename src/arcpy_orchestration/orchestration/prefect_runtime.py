@@ -18,6 +18,49 @@ _REQUIRED_PREFECT_KEYS = (
     "results_persist_by_default",
     "api_url",
 )
+_VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+def _logger_name_to_env_token(logger_name: str) -> str:
+    """Convert logger names to PREFECT_LOGGING_LOGGERS_<TOKEN>_LEVEL token form."""
+    token = re.sub(r"[^A-Za-z0-9]+", "_", logger_name.strip()).strip("_")
+    return token.upper()
+
+
+def _normalize_extra_loggers(raw_value: str, fallback: str = "") -> str:
+    """Normalize extra logger list and drop child loggers when parent namespace is present."""
+    names: list[str] = []
+    seen: set[str] = set()
+
+    for token in raw_value.split(","):
+        name = token.strip()
+        if not name:
+            continue
+
+        key = name.lower()
+        if key == "prefect":
+            continue
+        if key in seen:
+            continue
+
+        seen.add(key)
+        names.append(name)
+
+    if not names:
+        return fallback
+
+    lower_names = [name.lower() for name in names]
+    keep: list[str] = []
+    for idx, name in enumerate(names):
+        current = lower_names[idx]
+        has_parent = any(
+            idx != parent_idx and current.startswith(f"{parent}." )
+            for parent_idx, parent in enumerate(lower_names)
+        )
+        if not has_parent:
+            keep.append(name)
+
+    return ",".join(keep) if keep else fallback
 
 
 @dataclass(frozen=True)
@@ -33,6 +76,9 @@ class PrefectRuntimeConfig:
         api_url: Prefect API URL.
         worker_type: Local worker type.
         work_pool_name: Local Prefect work pool name.
+        logging_to_api_enabled: Whether Prefect logs are sent to the API/UI.
+        logging_level: Logging level for Prefect logger hierarchy.
+        logging_extra_loggers: Comma-delimited non-Prefect logger names to route through Prefect logging.
     """
 
     home_path: Path
@@ -43,16 +89,31 @@ class PrefectRuntimeConfig:
     api_url: str
     worker_type: str
     work_pool_name: str
+    logging_to_api_enabled: bool
+    logging_level: str
+    logging_extra_loggers: str
 
     def to_prefect_env(self) -> dict[str, str]:
         """Map runtime configuration to required PREFECT_* environment variables."""
-        return {
+        env_map = {
             "PREFECT_HOME": str(self.home_path),
             "PREFECT_API_DATABASE_CONNECTION_URL": self.api_database_connection_url,
             "PREFECT_LOCAL_STORAGE_PATH": str(self.local_storage_path),
             "PREFECT_RESULTS_PERSIST_BY_DEFAULT": str(self.results_persist_by_default).lower(),
             "PREFECT_API_URL": self.api_url,
+            "PREFECT_LOGGING_TO_API_ENABLED": str(self.logging_to_api_enabled).lower(),
+            "PREFECT_LOGGING_LEVEL": self.logging_level,
+            "PREFECT_LOGGING_LOGGERS_PREFECT_LEVEL": self.logging_level,
+            "PREFECT_LOGGING_EXTRA_LOGGERS": self.logging_extra_loggers,
         }
+
+        for logger_name in filter(None, self.logging_extra_loggers.split(",")):
+            token = _logger_name_to_env_token(logger_name)
+            if not token:
+                continue
+            env_map[f"PREFECT_LOGGING_LOGGERS_{token}_LEVEL"] = self.logging_level
+
+        return env_map
 
 
 def _coerce_bool(value: Any, key_name: str) -> bool:
@@ -151,6 +212,13 @@ def resolve_prefect_runtime_config(
         root,
     )
 
+    logging_level = str(getattr(prefect_node, "logging_level", "INFO")).upper()
+    if logging_level not in _VALID_LOG_LEVELS:
+        raise ValueError(
+            "Invalid Prefect logging level under 'orchestration.prefect.logging_level'. "
+            f"Expected one of {sorted(_VALID_LOG_LEVELS)}, got: {logging_level!r}."
+        )
+
     if not str(prefect_node.api_url).startswith(("http://", "https://")):
         raise ValueError("'api_url' must start with 'http://' or 'https://'.")
 
@@ -166,6 +234,20 @@ def resolve_prefect_runtime_config(
         api_url=str(prefect_node.api_url),
         worker_type=str(getattr(prefect_node, "worker_type", "process")),
         work_pool_name=str(getattr(prefect_node, "work_pool_name", "local-process-pool")),
+        logging_to_api_enabled=_coerce_bool(
+            getattr(prefect_node, "logging_to_api_enabled", True),
+            "logging_to_api_enabled",
+        ),
+        logging_level=logging_level,
+        logging_extra_loggers=_normalize_extra_loggers(
+            str(
+            getattr(
+                prefect_node,
+                "logging_extra_loggers",
+                "arcpy_orchestration",
+            )
+            )
+        ),
     )
 
 
