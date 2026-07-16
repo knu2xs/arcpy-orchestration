@@ -58,16 +58,36 @@ GOTO %1
     SET PREFECT_ACTION=%2
     IF "%PREFECT_ACTION%"=="" SET PREFECT_ACTION=start-all
     IF "%PREFECT_ACTION%"=="start-all" GOTO prefect_all
-    CALL conda run -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action %PREFECT_ACTION%
+    CALL conda run --no-capture-output -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action %PREFECT_ACTION%
     GOTO end
 
 :: Full web-UI experience from one call: launch the server and worker in their own windows,
 :: then serve the managed flow in this window. The server hosts the Prefect UI.
 :prefect_all
-    START "Prefect Server" conda run -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action start-server
-    START "Prefect Worker" conda run -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action start-worker
-    CALL conda run -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action serve-flow
+    START "Prefect Server" conda run --no-capture-output -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action start-server
+    START "Prefect Worker" conda run --no-capture-output -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action start-worker
+    SET PREFECT_API_HEALTH_URL=http://127.0.0.1:4200/api/health
+    SET PREFECT_API_TIMEOUT_SEC=%PREFECT_API_STARTUP_TIMEOUT_SEC%
+    IF "%PREFECT_API_TIMEOUT_SEC%"=="" SET PREFECT_API_TIMEOUT_SEC=90
+    SET /A PREFECT_WAIT_ELAPSED=0
+    ECHO Waiting for Prefect API at %PREFECT_API_HEALTH_URL% (timeout: %PREFECT_API_TIMEOUT_SEC%s)...
+
+:wait_prefect_api
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri '%PREFECT_API_HEALTH_URL%' -TimeoutSec 5; if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { exit 0 } else { exit 1 } } catch { exit 1 }"
+    IF %ERRORLEVEL%==0 GOTO prefect_serve_flow
+    IF %PREFECT_WAIT_ELAPSED% GEQ %PREFECT_API_TIMEOUT_SEC% GOTO prefect_api_timeout
+    TIMEOUT /T 2 /NOBREAK >NUL
+    SET /A PREFECT_WAIT_ELAPSED+=2
+    GOTO wait_prefect_api
+
+:prefect_serve_flow
+    ECHO Prefect API is reachable.
+    CALL conda run --no-capture-output -p %CONDA_DIR% powershell -ExecutionPolicy Bypass -File "%~dp0scripts\setup_prefect.ps1" -Action serve-flow
     GOTO end
+
+:prefect_api_timeout
+    ECHO ERROR: Prefect API did not become reachable at %PREFECT_API_HEALTH_URL% within %PREFECT_API_TIMEOUT_SEC%s.
+    EXIT /B 1
 
 :: Delete all compiled Python files
 :clean
@@ -77,12 +97,12 @@ GOTO %1
 
 :: Make documentation using MkDocs!
 :docs
-    CALL conda run -p %CONDA_DIR% mkdocs build -f ./docsrc/mkdocs.yml
+    CALL conda run --no-capture-output -p %CONDA_DIR% mkdocs build -f ./docsrc/mkdocs.yml
     GOTO end
 
 :: MkDocs live documentation server
 :docserve
-    CALL conda run -p %CONDA_DIR% mkdocs serve -f ./docsrc/mkdocs.yml
+    CALL conda run --no-capture-output -p %CONDA_DIR% mkdocs serve -f ./docsrc/mkdocs.yml
     GOTO end
 
 :: Build the local environment by cloning the ArcGIS Pro Python env

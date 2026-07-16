@@ -331,8 +331,8 @@ fallback exists so that a developer who runs the file *before*
 
 ```python
 WORKING_WKID: int = config.spatial.working_wkid
-WALK_DISTANCE_M: float = config.park_access.walk_distance_m
-PARKS_FC: str = str(DIR_PRJ / config.park_access.parks_fc)
+FLOOD_ZONES_FC: str = str(DIR_PRJ / config.flood_zone_summary.flood_zones_fc)
+PARCELS_FC: str = str(DIR_PRJ / config.flood_zone_summary.parcels_fc)
 ```
 
 Reading [`config/config.yml`](../../config/config.yml) once at import time
@@ -360,19 +360,25 @@ def parcels_near_parks_task(parks_projected: str, parcels_projected: str) -> str
 
 !!! note "Tasks should be thin"
     Resist the urge to put real work directly inside a `@task`. Keeping the
-    business logic in `arcpy_orchestration.park_access` means it stays
+    business logic in `arcpy_orchestration.flood_zone_summary` means it stays
     unit-testable without Prefect, and the same code can be reused from a
     notebook, a Python toolbox, or a different orchestrator.
 
 #### Compose the flow and enable result persistence
 
 ```python
-@flow(name="park-access-flow", persist_result=True, log_prints=True)
-def park_access_flow() -> str:
-    parks_projected, parcels_projected = project_inputs_task()
-    nearby_parcels = parcels_near_parks_task(parks_projected, parcels_projected)
-    parcel_summary = summarize_parcels_task(nearby_parcels)
-    return export_summary_task(parcel_summary)
+@flow(name="flood-zone-impact-flow", persist_result=True, log_prints=True)
+def flood_zone_impact_flow() -> str:
+    flood_projected, parcels_projected = project_inputs_task()
+    affected_parcels_fc, resolved_zone_field = affected_parcels_task(
+        flood_projected,
+        parcels_projected,
+    )
+    summary_df, affected_parcels_df = summarize_flood_impacts_task(
+        affected_parcels_fc,
+        resolved_zone_field,
+    )
+    return export_flood_report_task(summary_df, affected_parcels_df)
 ```
 
 `persist_result=True` stores the flow's return value and `log_prints=True`
@@ -397,6 +403,31 @@ logger, and the flow is decorated with `log_prints=True`, log records and
 `print` output from the pipeline appear automatically in the Prefect UI run
 logs — no custom handler is required. Use the package's module loggers for
 detailed diagnostics; they flow through to the same place.
+
+For reproducible behavior across derived projects, configure Prefect logger
+capture at the **namespace level** (parent loggers only), not both parent and
+child logger names.
+
+```yaml
+orchestration:
+    prefect:
+        logging_to_api_enabled: true
+        logging_level: "INFO"
+        logging_extra_loggers: "prefect,arcpy_orchestration"
+```
+
+Why this is the standard pattern:
+
+- Python logging propagates child records to parent loggers by default.
+- If both `arcpy_orchestration` and
+    `arcpy_orchestration.flood_zone_summary` are configured, the same record can
+    appear twice in the Prefect UI.
+- A parent namespace entry (for example, `arcpy_orchestration`) captures all
+    child module loggers without duplication.
+
+This project normalizes `logging_extra_loggers` at runtime and removes child
+entries when a parent namespace is present, so users get safe defaults even if
+they provide overlapping names.
 
 ---
 
@@ -715,7 +746,7 @@ reaches a terminal state, rather than executing in parallel. Inspect both run
 states in the Prefect UI under the deployment's **Runs** view.
 
 To attach or adjust a schedule for the deployment, use the deployment page in
-the Prefect UI (**Deployments → `park-access-flow/park-access` → Schedules**),
+the Prefect UI (**Deployments → `flood-zone-impact-flow/flood-zone-impact` → Schedules**),
 or configure it in the serve call. New schedules can be paused and resumed from
 the same page.
 
@@ -733,19 +764,19 @@ ephemeral mode, with no server required:
 ```
 
 This runs [`scripts/make_data_prefect.py`](../../scripts/make_data_prefect.py)'s
-`park_access_flow` directly and prints the output path on success.
+`flood_zone_impact_flow` directly and prints the output path on success.
 
 **Through the deployment** — with both services running (§6.4):
 
-1. In the Prefect UI, open **Deployments → `park-access-flow/park-access`**.
+1. In the Prefect UI, open **Deployments → `flood-zone-impact-flow/flood-zone-impact`**.
 2. Click **Run → Quick run** to trigger a manual run.
-3. Open the run in the **Runs** view. The four tasks (`project_inputs_task`,
-    `parcels_near_parks_task`, `summarize_parcels_task`, `export_summary_task`)
+3. Open the run in the **Runs** view. The flood tasks (`project_inputs_task`,
+    `affected_parcels_task`, `summarize_flood_impacts_task`, `export_flood_report_task`)
     should appear in the run graph. Click any task to view its structured log
     output — `arcpy_orchestration` log records appear here automatically via
     root-logger propagation (see §4.3).
 4. Confirm the output Excel workbook is written to the path defined by
-    `park_access.output_summary_path` in
+    `flood_zone_summary.output_summary_path` in
     [`config/config.yml`](../../config/config.yml).
 
 ---
@@ -780,8 +811,9 @@ actionable message for both conditions.
 | UI loads but shows connection errors or no data | `PREFECT_UI_API_URL` is not set to the externally visible proxied API URL on the server service (§1.4 / §6.1). |
 | Scheduled runs never fire | `PrefectServeFlow` is not running, or the deployment schedule is paused. Check the service and the deployment's Schedules page (§7). |
 | Tasks execute but no `arcpy_orchestration` logs appear in the UI | Confirm the flow is decorated with `log_prints=True` and that module loggers are not setting `propagate = False`. |
+| Logs appear twice in the Prefect UI | `logging_extra_loggers` contains overlapping parent and child logger names. Use namespace-level entries only (for example, `prefect,arcpy_orchestration`). |
 | `arcpy` import error on service start | The service account cannot find the ArcGIS Pro conda environment. Verify the **Executable Path** points to `prefect.exe` / `python.exe` inside the cloned env. |
-| Runs complete in the UI but the Excel output is missing | The `value_field` in `config.park_access.value_field` does not match the actual parcels schema. Inspect the feature class and update `config/config.yml`. |
+| Runs complete in the UI but the Excel output is missing | The `value_field` in `config.flood_zone_summary.value_field` does not match the actual parcels schema. Inspect the feature class and update `config/config.yml`. |
 | Served runner cannot reach the API after a server restart | Both services must share the same `PREFECT_API_URL` and metadata DB. Confirm the environment variables are set identically in both Servy service configs. |
 
 Prefect is now the active orchestration platform for this project.

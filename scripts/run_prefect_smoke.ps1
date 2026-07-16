@@ -16,9 +16,9 @@ from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root / "scripts"))
 
-from make_data_prefect import park_access_flow
+from make_data_prefect import flood_zone_impact_flow
 
-result = park_access_flow()
+result = flood_zone_impact_flow()
 print(f"Smoke run completed, output: {result}")
 '@
 

@@ -4,13 +4,46 @@
 param(
     [ValidateSet("bootstrap", "show-config", "start-server", "start-worker", "serve-flow")]
     [string] $Action = "bootstrap",
-    [string] $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+    [string] $ProjectRoot,
     [string] $WorkPoolName,
     [string] $WorkerType
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    $scriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        $scriptPath = $MyInvocation.MyCommand.Path
+    }
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        throw "Unable to resolve script path for setup_prefect.ps1. Pass -ProjectRoot explicitly."
+    }
+
+    $scriptDir = Split-Path -Path $scriptPath -Parent
+    $ProjectRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
+}
+
+function Get-PythonExecutable {
+    param([string] $Root)
+
+    $projectEnvPython = Join-Path $Root "env\python.exe"
+    if (Test-Path $projectEnvPython) {
+        return $projectEnvPython
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) {
+        $condaPrefixPython = Join-Path $env:CONDA_PREFIX "python.exe"
+        if (Test-Path $condaPrefixPython) {
+            return $condaPrefixPython
+        }
+    }
+
+    return (Get-Command python -ErrorAction Stop).Source
+}
+
+$PythonExecutable = Get-PythonExecutable -Root $ProjectRoot
 
 function Get-PrefectRuntimeState {
     param([string] $Root)
@@ -45,7 +78,7 @@ print(
 )
 '@
 
-    $json = $code | & python - $Root
+    $json = $code | & $PythonExecutable - $Root
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to resolve Prefect runtime configuration."
     }
@@ -59,6 +92,42 @@ function Export-PrefectEnvironment {
     foreach ($property in $RuntimeState.env.PSObject.Properties) {
         Set-Item -Path "Env:$($property.Name)" -Value ([string]$property.Value)
     }
+}
+
+function Wait-ForPrefectApi {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $ApiUrl,
+        [int] $TimeoutSeconds = 90,
+        [int] $PollSeconds = 2
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ApiUrl)) {
+        throw "PREFECT_API_URL is not set; cannot check Prefect API readiness."
+    }
+
+    $baseApiUrl = $ApiUrl.TrimEnd("/")
+    $healthUrl = "$baseApiUrl/health"
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    Write-Host "Waiting for Prefect API at '$healthUrl' (timeout: ${TimeoutSeconds}s)..."
+
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $response = Invoke-WebRequest -Uri $healthUrl -Method Get -UseBasicParsing -TimeoutSec 5
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
+                Write-Host "Prefect API is reachable."
+                return
+            }
+        }
+        catch {
+            # Server may still be starting; continue polling until timeout.
+        }
+
+        Start-Sleep -Seconds $PollSeconds
+    }
+
+    throw "Prefect API did not become reachable at '$healthUrl' within ${TimeoutSeconds}s."
 }
 
 $runtimeState = Get-PrefectRuntimeState -Root $ProjectRoot
@@ -78,16 +147,27 @@ switch ($Action) {
     }
     "start-server" {
         Write-Host "Starting Prefect server..."
-        prefect server start
+        & $PythonExecutable -m prefect server start
     }
     "start-worker" {
         Write-Host "Ensuring work pool '$effectiveWorkPool' exists..."
-        prefect work-pool create $effectiveWorkPool --type $effectiveWorkerType 2>$null
+        & $PythonExecutable -m prefect work-pool create $effectiveWorkPool --type $effectiveWorkerType 2>$null
         Write-Host "Starting Prefect worker..."
-        prefect worker start --pool $effectiveWorkPool --type $effectiveWorkerType
+        & $PythonExecutable -m prefect worker start --pool $effectiveWorkPool --type $effectiveWorkerType
     }
     "serve-flow" {
         Write-Host "Starting managed flow serve process..."
-        & python (Join-Path $ProjectRoot "scripts\make_data_prefect.py")
+        $apiTimeout = 90
+        if (-not [string]::IsNullOrWhiteSpace($env:PREFECT_API_STARTUP_TIMEOUT_SEC)) {
+            try {
+                $apiTimeout = [int]$env:PREFECT_API_STARTUP_TIMEOUT_SEC
+            }
+            catch {
+                Write-Warning "Invalid PREFECT_API_STARTUP_TIMEOUT_SEC '$($env:PREFECT_API_STARTUP_TIMEOUT_SEC)'; using default ${apiTimeout}s."
+            }
+        }
+
+        Wait-ForPrefectApi -ApiUrl ([string]$runtimeState.env.PREFECT_API_URL) -TimeoutSeconds $apiTimeout
+        & $PythonExecutable (Join-Path $ProjectRoot "scripts\make_data_prefect.py")
     }
 }
