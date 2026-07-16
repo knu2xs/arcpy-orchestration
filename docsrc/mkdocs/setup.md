@@ -480,9 +480,9 @@ fill in each tab as follows.
 | Service Name | `PrefectServer` |
 | Display Name | `Prefect Server` |
 | Description | `Prefect API and web UI for the ArcPy orchestration project.` |
-| Executable Path | full path to `prefect.exe` in the conda env `Scripts\` directory |
-| Arguments | `server start --host 127.0.0.1 --port 4200` |
+| Process Path | full path to `prefect.exe` in the conda env `Scripts\` directory (e.g. `C:\projects\arcpy-orchestration\env\Scripts\prefect.exe`) |
 | Startup Directory | `C:\projects\arcpy-orchestration` |
+| Arguments | `server start --host 127.0.0.1 --port 4200` |
 | Startup Type | `Automatic` |
 | Enable Console UI | **off** |
 
@@ -490,22 +490,15 @@ fill in each tab as follows.
 
 | Field | Value |
 |---|---|
-| Enable stdout logging | on |
-| stdout log path | `C:\projects\arcpy-orchestration\reports\logs\prefect_server_stdout.log` |
-| Enable stderr logging | on |
-| stderr log path | `C:\projects\arcpy-orchestration\reports\logs\prefect_server_stderr.log` |
-| Rotation | date-based, daily |
-| Max files to retain | `14` |
+| Stdout File Path | `C:\projects\arcpy-orchestration\reports\logs\prefect_server_stdout.log` |
+| Stderr File Path | `C:\projects\arcpy-orchestration\reports\logs\prefect_server_stderr.log` |
+| Date Rotation Interval | Monthly (or whatever you deem necessary) |
 
 #### Recovery
 
 | Field | Value |
 |---|---|
-| First failure | `Restart the service` |
-| Second failure | `Restart the service` |
-| Subsequent failures | `Take no action` |
-| Reset failure count after | `1 day` |
-| Restart delay | `30 seconds` |
+| Enable Health Monitoring | **on** |
 
 #### Log On
 
